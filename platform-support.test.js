@@ -41,13 +41,19 @@ test('normalizeArch marks unknown values as unknown', () => {
   assert.equal(normalizeArch('x86'), 'x86');
 });
 
-test('detectTarget reports Windows target and architecture', () => {
-  assert.deepEqual(detectTarget({ platform: 'win32', arch: 'arm64' }), {
-    platform: 'win32',
-    arch: 'arm64',
-    isWindows: true,
+  test('detectTarget reports an injected Windows target, architecture, and build', () => {
+    assert.deepEqual(detectTarget({
+      platform: 'win32',
+      arch: 'arm64',
+      env: {},
+      windowsBuild: 17763,
+    }), {
+      platform: 'win32',
+      arch: 'arm64',
+      isWindows: true,
+      windowsBuild: 17763,
+    });
   });
-});
 
 test('detectTarget prefers native Windows architecture environment variables', () => {
   assert.equal(detectTarget({
