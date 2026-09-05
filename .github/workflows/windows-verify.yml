@@ -12,7 +12,11 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path package.json) { npm install } else { Write-Host "无 package.json，跳过" }
-      - run: node --test --test-concurrency=1 *.test.js
+      - name: 运行测试
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Filter *.test.js -Name
+          node --test --test-concurrency=1 $files
       - run: node --check install-all.js
       - run: node --check platform-support.js
       - run: node --check software-manifest.js
@@ -36,7 +40,11 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path package.json) { npm install } else { Write-Host "无 package.json，跳过" }
-      - run: node --test --test-concurrency=1 *.test.js
+      - name: 运行测试
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Filter *.test.js -Name
+          node --test --test-concurrency=1 $files
       - run: node --check install-all.js
       - run: node --check platform-support.js
       - run: node --check software-manifest.js
