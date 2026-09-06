@@ -42,15 +42,15 @@ jobs:
             }
           }
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
-            Select-Object Name, PackageFullName, InstallLocation, Status
-          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' }
+            Select-Object Name, PackageFullName, InstallLocation, Status | Format-List
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' } | Format-List
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
         run: |
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
-            Select-Object Name, PackageFullName, InstallLocation
-          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' }
+            Select-Object Name, PackageFullName, InstallLocation | Format-List
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' } | Format-List
 
   arm64:
     runs-on: windows-11-arm        # 云端 Windows ARM64 机器
@@ -92,12 +92,12 @@ jobs:
             }
           }
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
-            Select-Object Name, PackageFullName, InstallLocation, Status
-          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' }
+            Select-Object Name, PackageFullName, InstallLocation, Status | Format-List
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' } | Format-List
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
         run: |
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
-            Select-Object Name, PackageFullName, InstallLocation
-          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' }
+            Select-Object Name, PackageFullName, InstallLocation | Format-List
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' } | Format-List
