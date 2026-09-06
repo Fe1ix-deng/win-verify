@@ -112,7 +112,7 @@ $claudeAumid = ''
 $codexAumid = ''
 $claudeProcessName = ''
 $codexProcessName = 'ChatGPT'
-$ccSwitchPath = 'C:\Program Files\CC-Switch\CC-Switch.exe'
+$ccSwitchPath = Join-Path $env:LOCALAPPDATA 'Programs\CC Switch\CC-Switch.exe'
 
 try {
   try {

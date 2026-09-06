@@ -12,6 +12,7 @@ const {
   fetchText,
   installMsix,
   installSoftware,
+  INSTALL_PATH,
   SOFTWARE_CONFIG,
   waitForExit,
 } = require('./install-all');
@@ -148,6 +149,14 @@ test('SOFTWARE_CONFIG identifies manifest-backed installers', () => {
       needsManualStep: false,
     },
   ]);
+});
+
+test('CC Switch MSI uses its per-user installation path', () => {
+  assert.equal(
+    INSTALL_PATH,
+    path.win32.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'CC Switch', 'CC-Switch.exe'),
+  );
+  assert.equal(INSTALL_PATH.includes('Program Files'), false);
 });
 
 test('dry-run completion points to install-all.js', () => {

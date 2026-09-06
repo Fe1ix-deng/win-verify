@@ -25,7 +25,12 @@ const SOFTWARE_CONFIG = [
     repoName: 'cc-switch',
     filePattern: /Windows\.msi$/i,
     excludePattern: /arm64/i,
-    installPath: path.win32.join('C:\\', 'Program Files', 'CC-Switch', 'CC-Switch.exe'),
+    installPath: path.win32.join(
+      process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+      'Programs',
+      'CC Switch',
+      'CC-Switch.exe',
+    ),
     autoInstall: true,
   },
   {
