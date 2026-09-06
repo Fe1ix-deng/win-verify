@@ -78,8 +78,8 @@ jobs:
       - name: 计算大小和SHA256(x64)
         shell: pwsh
         run: |
-          Get-Item dist\ai-installer-win-x64.exe | Select-Object Name, Length
-          Get-FileHash dist\ai-installer-win-x64.exe -Algorithm SHA256
+          Get-Item dist\ai-installer-win-x64.exe | Select-Object Name, Length | Format-List
+          Get-FileHash dist\ai-installer-win-x64.exe -Algorithm SHA256 | Format-List
 
   arm64:
     runs-on: windows-11-arm        # 云端 Windows ARM64 机器
@@ -157,5 +157,5 @@ jobs:
       - name: 计算大小和SHA256(arm64)
         shell: pwsh
         run: |
-          Get-Item dist\ai-installer-win-arm64.exe | Select-Object Name, Length
-          Get-FileHash dist\ai-installer-win-arm64.exe -Algorithm SHA256
+          Get-Item dist\ai-installer-win-arm64.exe | Select-Object Name, Length | Format-List
+          Get-FileHash dist\ai-installer-win-arm64.exe -Algorithm SHA256 | Format-List
