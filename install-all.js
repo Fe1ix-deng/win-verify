@@ -583,7 +583,8 @@ async function installMsix(msixPath, spawnProcess = spawn, platform = process.pl
     throw new Error('MSIX 安装仅支持 Windows 平台');
   }
 
-  const command = 'Add-AppxPackage -Path $args[0] -ErrorAction Stop';
+  const escapedPath = msixPath.replace(/'/g, "''");
+  const command = `Add-AppxPackage -Path '${escapedPath}' -ErrorAction Stop`;
   const args = [
     '-NoProfile',
     '-NonInteractive',
@@ -591,8 +592,6 @@ async function installMsix(msixPath, spawnProcess = spawn, platform = process.pl
     'Bypass',
     '-Command',
     command,
-    '--',
-    msixPath,
   ];
 
   if (DRY_RUN) {

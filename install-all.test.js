@@ -238,9 +238,7 @@ test('installMsix invokes PowerShell with the raw MSIX path for x64 and ARM64', 
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        'Add-AppxPackage -Path $args[0] -ErrorAction Stop',
-        '--',
-        'C:\\Temp\\Claude-win-x64.msix',
+        "Add-AppxPackage -Path 'C:\\Temp\\Claude-win-x64.msix' -ErrorAction Stop",
       ],
       options: { stdio: 'inherit' },
     },
@@ -252,9 +250,7 @@ test('installMsix invokes PowerShell with the raw MSIX path for x64 and ARM64', 
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        'Add-AppxPackage -Path $args[0] -ErrorAction Stop',
-        '--',
-        'C:\\Temp\\Codex-Windows-arm64.msix',
+        "Add-AppxPackage -Path 'C:\\Temp\\Codex-Windows-arm64.msix' -ErrorAction Stop",
       ],
       options: { stdio: 'inherit' },
     },
@@ -295,7 +291,7 @@ test('dry-run MSIX installation logs PowerShell without spawning', () => {
     '--dry-run',
   ], { encoding: 'utf8' });
 
-  assert.match(output, /Add-AppxPackage -Path \$args\[0\] -ErrorAction Stop/);
+  assert.match(output, /Add-AppxPackage -Path 'C:\\Temp\\installer\.msix' -ErrorAction Stop/);
   assert.match(output, /C:\\Temp\\installer\.msix/);
   assert.doesNotMatch(output, /spawned/);
 });
@@ -334,8 +330,8 @@ test('Claude and Codex installSoftware use PowerShell MSIX installation on Windo
 
   assert.equal(invocations.length, 2);
   assert.deepEqual(invocations.map((invocation) => invocation.command), ['powershell.exe', 'powershell.exe']);
-  assert.match(invocations[0].args.at(-1), /Claude-win-x64\.msix$/);
-  assert.match(invocations[1].args.at(-1), /Codex-Windows-x64\.msix$/);
+  assert.match(invocations[0].args.find((arg) => /Claude-win-x64\.msix/.test(arg)), /Claude-win-x64\.msix/);
+  assert.match(invocations[1].args.find((arg) => /Codex-Windows-x64\.msix/.test(arg)), /Codex-Windows-x64\.msix/);
 });
 
 test('installSoftware stores manifest downloads in the user Downloads folder', () => {
