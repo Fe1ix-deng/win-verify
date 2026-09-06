@@ -1,0 +1,5 @@
+arch=x64
+runner=windows-latest
+bytes=37706526
+sha256=6906E0B58B62CD306E10235E8800887B0CB474C65F3685034FD148F9B2E9DF80
+print-target={"platform":"win32","arch":"x64","isWindows":true,"windowsBuild":26100}

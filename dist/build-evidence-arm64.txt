@@ -1,0 +1,5 @@
+arch=arm64
+runner=windows-11-arm
+bytes=27230014
+sha256=2CFAD9CDCD2E96178CA73A8B7B02C53357D0EE39C09029C64E530AE462BF4923
+print-target={"platform":"win32","arch":"arm64","isWindows":true,"windowsBuild":26200}
