@@ -8,10 +8,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - name: 安装依赖(如果有package.json)
-        shell: pwsh
-        run: |
-          if (Test-Path package.json) { npm install } else { Write-Host "无 package.json，跳过" }
+      - name: 安装依赖
+        run: npm ci
       - name: 运行测试
         shell: pwsh
         run: |
@@ -67,6 +65,19 @@ jobs:
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
             Select-Object Name, PackageFullName, InstallLocation | Format-List
           Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' } | Format-List
+      - name: 检查pkg版本
+        run: npx pkg --version
+      - name: 构建x64 exe
+        run: npm run build:win:x64
+      - name: 验证PE架构(x64)
+        run: npm run verify:pe:x64
+      - name: 运行exe自检(x64)
+        run: node dist\ai-installer-win-x64.exe --print-target
+      - name: 计算大小和SHA256(x64)
+        shell: pwsh
+        run: |
+          Get-Item dist\ai-installer-win-x64.exe | Select-Object Name, Length
+          Get-FileHash dist\ai-installer-win-x64.exe -Algorithm SHA256
 
   arm64:
     runs-on: windows-11-arm        # 云端 Windows ARM64 机器
@@ -74,10 +85,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - name: 安装依赖(如果有package.json)
-        shell: pwsh
-        run: |
-          if (Test-Path package.json) { npm install } else { Write-Host "无 package.json，跳过" }
+      - name: 安装依赖
+        run: npm ci
       - name: 运行测试
         shell: pwsh
         run: |
@@ -133,3 +142,16 @@ jobs:
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
             Select-Object Name, PackageFullName, InstallLocation | Format-List
           Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex|CC Switch' } | Format-List
+      - name: 检查pkg版本
+        run: npx pkg --version
+      - name: 构建arm64 exe
+        run: npm run build:win:arm64
+      - name: 验证PE架构(arm64)
+        run: npm run verify:pe:arm64
+      - name: 运行exe自检(arm64)
+        run: node dist\ai-installer-win-arm64.exe --print-target
+      - name: 计算大小和SHA256(arm64)
+        shell: pwsh
+        run: |
+          Get-Item dist\ai-installer-win-arm64.exe | Select-Object Name, Length
+          Get-FileHash dist\ai-installer-win-arm64.exe -Algorithm SHA256
