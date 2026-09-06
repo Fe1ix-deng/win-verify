@@ -72,7 +72,9 @@ jobs:
       - name: 验证PE架构(x64)
         run: npm run verify:pe:x64
       - name: 运行exe自检(x64)
-        run: node dist\ai-installer-win-x64.exe --print-target
+        shell: pwsh
+        run: |
+          & ".\dist\ai-installer-win-x64.exe" --print-target
       - name: 计算大小和SHA256(x64)
         shell: pwsh
         run: |
@@ -149,7 +151,9 @@ jobs:
       - name: 验证PE架构(arm64)
         run: npm run verify:pe:arm64
       - name: 运行exe自检(arm64)
-        run: node dist\ai-installer-win-arm64.exe --print-target
+        shell: pwsh
+        run: |
+          & ".\dist\ai-installer-win-arm64.exe" --print-target
       - name: 计算大小和SHA256(arm64)
         shell: pwsh
         run: |
