@@ -1,0 +1,140 @@
+name: Release Windows installers
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            exe: ai-installer-win-x64.exe
+            machine: '0x8664'
+          - arch: arm64
+            runner: windows-11-arm
+            exe: ai-installer-win-arm64.exe
+            machine: '0xAA64'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Verify pkg version
+        shell: pwsh
+        run: |
+          $version = (npx pkg --version).Trim()
+          if ($version -ne '5.8.1') {
+            throw "Expected pkg 5.8.1, got $version"
+          }
+      - run: npm run build:win:${{ matrix.arch }}
+      - run: npm run verify:pe:${{ matrix.arch }}
+      - name: Verify packaged target
+        shell: pwsh
+        run: |
+          $output = (& ".\dist\${{ matrix.exe }}" --print-target | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "--print-target failed with exit code $LASTEXITCODE"
+          }
+          $target = $output | ConvertFrom-Json
+          if ($target.platform -ne 'win32' -or $target.arch -ne '${{ matrix.arch }}' -or $target.isWindows -ne $true) {
+            throw "Unexpected target: $output"
+          }
+          $output | Set-Content ".\dist\print-target-${{ matrix.arch }}.txt" -Encoding utf8
+      - name: Record release evidence
+        shell: pwsh
+        run: |
+          $file = Get-Item ".\dist\${{ matrix.exe }}"
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+          $target = (Get-Content ".\dist\print-target-${{ matrix.arch }}.txt" -Raw).Trim()
+          @(
+            "arch=${{ matrix.arch }}"
+            "runner=${{ matrix.runner }}"
+            "bytes=$($file.Length)"
+            "sha256=$hash"
+            "pe-machine=${{ matrix.machine }}"
+            "print-target=$target"
+          ) | Set-Content ".\dist\release-evidence-${{ matrix.arch }}.txt" -Encoding utf8
+          Remove-Item ".\dist\print-target-${{ matrix.arch }}.txt" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: |
+            dist/${{ matrix.exe }}
+            dist/release-evidence-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.ref }}
+      - name: Download x64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x64
+          path: release-assets/x64
+      - name: Download ARM64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-arm64
+          path: release-assets/arm64
+      - name: Assemble and verify release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/final
+          cp release-assets/x64/ai-installer-win-x64.exe release-assets/final/
+          cp release-assets/arm64/ai-installer-win-arm64.exe release-assets/final/
+          cp THIRD-PARTY-NOTICES.md release-assets/final/
+          test ! -e release-assets/final/ai-installer.exe
+          test ! -e release-assets/final/ai-installer-win-x86.exe
+          sha256sum \
+            release-assets/final/ai-installer-win-x64.exe \
+            release-assets/final/ai-installer-win-arm64.exe \
+            > release-assets/final/SHA256SUMS.txt
+          cat release-assets/x64/release-evidence-x64.txt
+          cat release-assets/arm64/release-evidence-arm64.txt
+          echo '--- release checksums ---'
+          cat release-assets/final/SHA256SUMS.txt
+      - name: Verify notices exist in the tagged repository snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/THIRD-PARTY-NOTICES.md?ref=${GITHUB_REF_NAME}" \
+            --jq '.path' | grep -Fx 'THIRD-PARTY-NOTICES.md'
+      - name: Create unsigned GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/final/ai-installer-win-x64.exe
+            release-assets/final/ai-installer-win-arm64.exe
+            release-assets/final/SHA256SUMS.txt
+            release-assets/final/THIRD-PARTY-NOTICES.md
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            当前版本为未签名 Windows 安装包。
+
+            - 支持 Windows x64 和原生 ARM64；不提供 x86。
+            - 请使用 `SHA256SUMS.txt` 校验下载文件。
+            - SignPath Foundation OV 签名申请审核完成后，签名版本将通过后续 Release 发布。
