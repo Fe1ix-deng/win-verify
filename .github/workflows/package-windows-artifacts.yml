@@ -1,0 +1,112 @@
+name: Package Windows artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            exe: ai-installer-win-x64.exe
+          - arch: arm64
+            runner: windows-11-arm
+            exe: ai-installer-win-arm64.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npx pkg --version
+      - run: npm run build:win:${{ matrix.arch }}
+      - run: npm run verify:pe:${{ matrix.arch }}
+      - name: Packaged target self-check
+        shell: pwsh
+        run: |
+          $targetOutput = (& ".\dist\${{ matrix.exe }}" --print-target | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged target self-check failed with exit code $LASTEXITCODE"
+          }
+          Write-Output $targetOutput
+          $targetOutput | Set-Content ".\dist\print-target-${{ matrix.arch }}.txt" -Encoding utf8
+      - name: Record build evidence
+        shell: pwsh
+        run: |
+          $file = Get-Item ".\dist\${{ matrix.exe }}"
+          $hash = Get-FileHash $file.FullName -Algorithm SHA256
+          $target = (Get-Content ".\dist\print-target-${{ matrix.arch }}.txt" -Raw).Trim()
+          @(
+            "arch=${{ matrix.arch }}"
+            "runner=${{ matrix.runner }}"
+            "bytes=$($file.Length)"
+            "sha256=$($hash.Hash.ToUpperInvariant())"
+            "print-target=$target"
+          ) | Set-Content ".\dist\build-evidence-${{ matrix.arch }}.txt" -Encoding utf8
+          Remove-Item ".\dist\print-target-${{ matrix.arch }}.txt" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-installer-win-${{ matrix.arch }}
+          path: |
+            dist/${{ matrix.exe }}
+            dist/build-evidence-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  validate:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            exe: ai-installer-win-x64.exe
+          - arch: arm64
+            runner: windows-11-arm
+            exe: ai-installer-win-arm64.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout v4
+      - uses: actions/setup-node v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download retained artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-installer-win-${{ matrix.arch }}
+          path: dist
+      - name: Prepare validation evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ".\dist\validation-evidence-${{ matrix.arch }}" | Out-Null
+      - name: Validate retained artifact and installation
+        shell: pwsh
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          TARGET_EXE: ${{ matrix.exe }}
+        run: |
+          .\scripts\validate-packaged-install.ps1 `
+            -Architecture $env:TARGET_ARCH `
+            -Executable ".\dist\$env:TARGET_EXE"
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence-win-${{ matrix.arch }}
+          path: dist/validation-evidence-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
