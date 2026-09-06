@@ -44,6 +44,22 @@ jobs:
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
             Select-Object Name, PackageFullName, InstallLocation, Status | Format-List
           Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' } | Format-List
+      - name: 通过清单获取真实AppUserModelId
+        shell: pwsh
+        run: |
+          foreach ($pkgName in @('OpenAI.Codex', 'Claude')) {
+            $pkg = Get-AppxPackage -Name $pkgName -ErrorAction SilentlyContinue
+            if (-not $pkg) {
+              Write-Host "$pkgName 未找到已安装的包，跳过"
+              continue
+            }
+            $manifest = Get-AppxPackageManifest -Package $pkg
+            Write-Host "==== $pkgName ===="
+            $manifest.Package.Applications.Application | Select-Object Id, Executable, EntryPoint | Format-List
+            $manifest.Package.Applications.Application | ForEach-Object {
+              Write-Host "AppUserModelId: $($pkg.PackageFamilyName)!$($_.Id)"
+            }
+          }
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
@@ -94,6 +110,22 @@ jobs:
           Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
             Select-Object Name, PackageFullName, InstallLocation, Status | Format-List
           Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' } | Format-List
+      - name: 通过清单获取真实AppUserModelId
+        shell: pwsh
+        run: |
+          foreach ($pkgName in @('OpenAI.Codex', 'Claude')) {
+            $pkg = Get-AppxPackage -Name $pkgName -ErrorAction SilentlyContinue
+            if (-not $pkg) {
+              Write-Host "$pkgName 未找到已安装的包，跳过"
+              continue
+            }
+            $manifest = Get-AppxPackageManifest -Package $pkg
+            Write-Host "==== $pkgName ===="
+            $manifest.Package.Applications.Application | Select-Object Id, Executable, EntryPoint | Format-List
+            $manifest.Package.Applications.Application | ForEach-Object {
+              Write-Host "AppUserModelId: $($pkg.PackageFamilyName)!$($_.Id)"
+            }
+          }
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
