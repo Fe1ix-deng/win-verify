@@ -1,0 +1,15 @@
+{
+  "name": "cc-switch-ai-installer",
+  "private": true,
+  "scripts": {
+    "test": "node --test --test-concurrency=1 *.test.js",
+    "build:win:x64": "pkg install-all.js --target node18-win-x64 --output dist/ai-installer-win-x64.exe",
+    "build:win:arm64": "pkg install-all.js --target node18-win-arm64 --output dist/ai-installer-win-arm64.exe",
+    "build:win": "npm run build:win:x64 && npm run build:win:arm64",
+    "verify:pe:x64": "node scripts/verify-pe.js dist/ai-installer-win-x64.exe x64",
+    "verify:pe:arm64": "node scripts/verify-pe.js dist/ai-installer-win-arm64.exe arm64"
+  },
+  "devDependencies": {
+    "pkg": "5.8.1"
+  }
+}

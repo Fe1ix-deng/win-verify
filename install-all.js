@@ -15,6 +15,7 @@ const { getArtifact } = require('./software-manifest');
 const { findChecksumEntry, parseChecksumText, verifyFileSha256 } = require('./checksum');
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const PRINT_TARGET = process.argv.includes('--print-target');
 
 const SOFTWARE_CONFIG = [
   {
@@ -30,26 +31,12 @@ const SOFTWARE_CONFIG = [
   {
     id: 'claude',
     name: 'Claude Desktop',
-    installPath: path.win32.join(
-      process.env.LOCALAPPDATA || 'C:\\Users\\Default\\AppData\\Local',
-      'Programs',
-      'claude-desktop',
-      'Claude.exe',
-    ),
-    autoInstall: false,
+    autoInstall: true,
   },
   {
     id: 'codex',
     name: 'Codex',
-    installPath: path.win32.join(
-      process.env.LOCALAPPDATA || 'C:\\Users\\Default\\AppData\\Local',
-      'Microsoft',
-      'WindowsApps',
-      'OpenAI.ChatGPT_3np6heh8dcz8a',
-      'Codex.exe',
-    ),
-    autoInstall: false,
-    needsManualStep: true,
+    autoInstall: true,
   },
 ];
 
@@ -585,6 +572,75 @@ async function installMsi(msiPath, spawnProcess = spawn, platform = process.plat
 }
 
 /**
+ * Install an MSIX package through PowerShell's AppX deployment cmdlet.
+ * @param {string} msixPath - MSIX file path
+ * @param {Function} spawnProcess - Optional process launcher for tests
+ * @param {string} platform - Optional platform identifier for tests
+ * @returns {Promise<void>}
+ */
+async function installMsix(msixPath, spawnProcess = spawn, platform = process.platform) {
+  if (platform !== 'win32') {
+    throw new Error('MSIX 安装仅支持 Windows 平台');
+  }
+
+  const command = 'Add-AppxPackage -Path $args[0] -ErrorAction Stop';
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    command,
+    '--',
+    msixPath,
+  ];
+
+  if (DRY_RUN) {
+    console.log(`[模拟] 将执行命令: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${command}" -- "${msixPath}"`);
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    let powershell;
+    try {
+      powershell = spawnProcess('powershell.exe', args, {
+        stdio: 'inherit',
+      });
+    } catch (error) {
+      fail(new Error(`无法启动 MSIX 安装: ${error.message}`));
+      return;
+    }
+
+    powershell.on('error', (error) => {
+      fail(new Error(`无法启动 MSIX 安装: ${error.message}`));
+    });
+
+    powershell.on('close', (code) => {
+      if (code === 0) {
+        succeed();
+        return;
+      }
+
+      const error = new Error(`MSIX 安装失败，退出码: ${code}`);
+      error.exitCode = code;
+      fail(error);
+    });
+  });
+}
+
+/**
  * 安装 NSIS EXE 文件（仅 Windows）
  * @param {string} exePath - EXE 安装包路径
  * @param {Function} spawnProcess - 可选的进程启动实现，便于测试
@@ -654,12 +710,16 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     return;
   }
 
-  console.log('[检测] 正在检查本地安装...');
-  try {
-    const installed = await checkInstalled(config.installPath);
-    console.log(`[检测] ${config.name} ${installed ? '已安装' : '未安装'}`);
-  } catch (error) {
-    console.log(`[错误] 无法检查本地安装: ${error.message}`);
+  if (artifact.installerType === 'msix') {
+    console.log('[检测] MSIX 安装状态将在 Add-AppxPackage 完成后由退出码确认');
+  } else {
+    console.log('[检测] 正在检查本地安装...');
+    try {
+      const installed = await checkInstalled(config.installPath);
+      console.log(`[检测] ${config.name} ${installed ? '已安装' : '未安装'}`);
+    } catch (error) {
+      console.log(`[错误] 无法检查本地安装: ${error.message}`);
+    }
   }
 
   console.log();
@@ -706,6 +766,8 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
         try {
           if (/\.msi$/i.test(destPath)) {
             await installMsi(destPath, spawnProcess, target.platform);
+          } else if (/\.msix$/i.test(destPath)) {
+            await installMsix(destPath, spawnProcess, target.platform);
           } else if (/\.exe$/i.test(destPath)) {
             await installExe(destPath, spawnProcess, target.platform);
           }
@@ -715,6 +777,8 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
           console.log('[验证] 正在验证安装...');
           if (DRY_RUN) {
             console.log('[模拟] 跳过验证（模拟模式）');
+          } else if (artifact.installerType === 'msix') {
+            console.log('[验证] ✓ Add-AppxPackage 返回退出码 0');
           } else {
             const installed = await checkInstalled(config.installPath);
             if (installed) {
@@ -741,36 +805,14 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
       }
     } else {
       console.log();
-      if (config.needsManualStep && target.isWindows) {
-        console.log('[提示] 该软件需要通过微软商店安装');
-        console.log('[提示] 正在自动打开安装器...');
-        console.log(`       文件位置: ${destPath}`);
-
-        try {
-          // 自动执行安装器，打开 Microsoft Store
-          const installer = spawnProcess(destPath, [], {
-            stdio: 'ignore',
-            detached: true,
-          });
-          installer.unref();
-
-          console.log('[提示] Microsoft Store 即将打开，请在商店中点击"获取"按钮');
-          console.log('[提示] .msix 文件需要 Windows 10 1809 或更高版本；Windows 7/8/8.1 不在兼容承诺范围内');
-        } catch (error) {
-          console.log(`[错误] 无法自动打开安装器: ${error.message}`);
-          console.log('[提示] 请手动双击以下文件：');
-          console.log(`       ${destPath}`);
-        }
-      } else {
-        console.log('[提示] 该软件需要手动安装');
-        console.log('[提示] 请双击以下文件完成安装:');
-        console.log(`       ${destPath}`);
-        if (!target.isWindows) {
-          console.log('[提示] 当前系统不是 Windows，未自动打开安装器');
-        }
-        if (/\.msix$/i.test(destPath)) {
-          console.log('[提示] .msix 文件需要 Windows 10 1809 或更高版本；Windows 7/8/8.1 不在兼容承诺范围内');
-        }
+      console.log('[提示] 该软件需要手动安装');
+      console.log('[提示] 请双击以下文件完成安装:');
+      console.log(`       ${destPath}`);
+      if (!target.isWindows) {
+        console.log('[提示] 当前系统不是 Windows，未自动打开安装器');
+      }
+      if (/\.msix$/i.test(destPath)) {
+        console.log('[提示] .msix 文件需要 Windows 10 1809 或更高版本；Windows 7/8/8.1 不在兼容承诺范围内');
       }
     }
   } catch (error) {
@@ -825,16 +867,20 @@ async function main() {
     console.log('安装流程完成！');
     console.log();
     console.log('=== 下一步操作 ===');
-    console.log('1. 如果 Codex 需要手动安装，请双击上面提示的文件，在 Microsoft Store 中点击"获取"');
-    console.log('2. 首次启动 Claude Desktop 和 Codex，按提示完成初始化');
-    console.log('3. 访问你的中转站网站，点击"导入到 CCS"按钮配置 API 密钥');
-    console.log('4. 在 Claude Desktop 和 Codex 的设置中，将 API 提供商设为 CC Switch');
+    console.log('1. 首次启动 Claude Desktop 和 Codex，按提示完成初始化');
+    console.log('2. 访问你的中转站网站，点击"导入到 CCS"按钮配置 API 密钥');
+    console.log('3. 在 Claude Desktop 和 Codex 的设置中，将 API 提供商设为 CC Switch');
   }
   console.log('='.repeat(50));
   await waitForExit();
 }
 
 if (require.main === module) {
+  if (PRINT_TARGET) {
+    console.log(JSON.stringify(detectTarget()));
+    process.exit(0);
+  }
+
   main().catch((error) => {
     console.error(`[错误] ${error.message}`);
     process.exitCode = 1;
@@ -849,12 +895,14 @@ module.exports = {
   checkInstalled,
   downloadFile,
   DRY_RUN,
+  PRINT_TARGET,
   explainMsiExitCode,
   fetchText,
   formatBytes,
   getLatestVersion,
   installExe,
   installMsi,
+  installMsix,
   installSoftware,
   main,
   SOFTWARE_CONFIG,

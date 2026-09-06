@@ -8,7 +8,13 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { fetchText, installSoftware, SOFTWARE_CONFIG, waitForExit } = require('./install-all');
+const {
+  fetchText,
+  installMsix,
+  installSoftware,
+  SOFTWARE_CONFIG,
+  waitForExit,
+} = require('./install-all');
 const { detectTarget } = require('./platform-support');
 
 test('waitForExit waits for a keypress before closing readline', async () => {
@@ -132,14 +138,14 @@ test('SOFTWARE_CONFIG identifies manifest-backed installers', () => {
     {
       id: 'claude',
       name: 'Claude Desktop',
-      autoInstall: false,
+      autoInstall: true,
       needsManualStep: false,
     },
     {
       id: 'codex',
       name: 'Codex',
-      autoInstall: false,
-      needsManualStep: true,
+      autoInstall: true,
+      needsManualStep: false,
     },
   ]);
 });
@@ -155,27 +161,181 @@ test('dry-run completion points to install-all.js', () => {
   assert.match(output, /node install-all\.js/);
 });
 
-test('Codex configuration identifies the Microsoft Store manual step', () => {
+test('--print-target emits target JSON without starting installation', () => {
+  const output = execFileSync(process.execPath, ['install-all.js', '--print-target'], {
+    cwd: path.dirname(__filename),
+    env: {
+      ...process.env,
+      HOME: path.join(os.tmpdir(), 'installer-print-target-home'),
+      USERPROFILE: path.join(os.tmpdir(), 'installer-print-target-home'),
+    },
+    encoding: 'utf8',
+    timeout: 2_000,
+  });
+
+  const target = JSON.parse(output);
+  assert.deepEqual(target, detectTarget());
+  assert.equal(typeof target.platform, 'string');
+  assert.equal(typeof target.arch, 'string');
+  assert.equal(typeof target.isWindows, 'boolean');
+  assert.doesNotMatch(output, /下载|安装|https?:\/\//);
+});
+
+test('Claude and Codex configurations use automatic installation', () => {
   const codex = SOFTWARE_CONFIG.find((config) => config.name === 'Codex');
+  const claude = SOFTWARE_CONFIG.find((config) => config.name === 'Claude Desktop');
 
   assert.equal(codex.id, 'codex');
-  assert.equal(codex.autoInstall, false);
-  assert.equal(codex.needsManualStep, true);
+  assert.equal(codex.autoInstall, true);
+  assert.equal(codex.needsManualStep, undefined);
+  assert.equal(claude.autoInstall, true);
 });
 
-test('needsManualStep launches the downloaded installer independently', () => {
+test('MSIX installation is dispatched through installMsix', () => {
   const source = fs.readFileSync('./install-all.js', 'utf8');
 
-  assert.match(source, /spawnProcess\(destPath, \[\], \{\s*stdio: 'ignore',\s*detached: true,\s*\}\)/);
-  assert.match(source, /installer\.unref\(\)/);
-  assert.match(source, /catch \(error\) \{[\s\S]*无法自动打开安装器/);
+  assert.match(source, /installMsix\(destPath, spawnProcess, target\.platform\)/);
+  assert.doesNotMatch(source, /spawnProcess\(destPath, \[\], \{\s*stdio: 'ignore',\s*detached: true,\s*\}\)/);
+  assert.doesNotMatch(source, /installer\.unref\(\)/);
 });
 
-test('Claude configuration uses the architecture manifest and manual MSIX flow', () => {
+test('Claude configuration uses the architecture manifest and automatic MSIX flow', () => {
   const claude = SOFTWARE_CONFIG.find((config) => config.name === 'Claude Desktop');
 
   assert.equal(claude.id, 'claude');
-  assert.equal(claude.autoInstall, false);
+  assert.equal(claude.autoInstall, true);
+});
+
+test('installMsix rejects non-Windows platforms without spawning', async () => {
+  let spawnCount = 0;
+
+  await assert.rejects(
+    installMsix('/tmp/installer.msix', () => { spawnCount += 1; }, 'darwin'),
+    /MSIX 安装仅支持 Windows 平台/,
+  );
+  assert.equal(spawnCount, 0);
+});
+
+test('installMsix invokes PowerShell with the raw MSIX path for x64 and ARM64', async () => {
+  const invocations = [];
+  const fakeSpawn = (command, args, options) => {
+    invocations.push({ command, args, options });
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
+
+  for (const msixPath of ['C:\\Temp\\Claude-win-x64.msix', 'C:\\Temp\\Codex-Windows-arm64.msix']) {
+    await installMsix(msixPath, fakeSpawn, 'win32');
+  }
+
+  assert.deepEqual(invocations.map(({ command, args, options }) => ({ command, args, options })), [
+    {
+      command: 'powershell.exe',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'Add-AppxPackage -Path $args[0] -ErrorAction Stop',
+        '--',
+        'C:\\Temp\\Claude-win-x64.msix',
+      ],
+      options: { stdio: 'inherit' },
+    },
+    {
+      command: 'powershell.exe',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'Add-AppxPackage -Path $args[0] -ErrorAction Stop',
+        '--',
+        'C:\\Temp\\Codex-Windows-arm64.msix',
+      ],
+      options: { stdio: 'inherit' },
+    },
+  ]);
+});
+
+test('installMsix resolves on PowerShell exit code 0 and rejects non-zero exit codes', async () => {
+  const fakeSpawn = (_command, _args, _options) => {
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit('close', 17));
+    return child;
+  };
+
+  await assert.rejects(
+    installMsix('C:\\Temp\\installer.msix', fakeSpawn, 'win32'),
+    (error) => error.exitCode === 17 && /退出码: 17/.test(error.message),
+  );
+});
+
+test('installMsix converts PowerShell error events into readable errors', async () => {
+  const fakeSpawn = (_command, _args, _options) => {
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit('error', new Error('powershell unavailable')));
+    return child;
+  };
+
+  await assert.rejects(
+    installMsix('C:\\Temp\\installer.msix', fakeSpawn, 'win32'),
+    /无法启动 MSIX 安装: powershell unavailable/,
+  );
+});
+
+test('dry-run MSIX installation logs PowerShell without spawning', () => {
+  const output = execFileSync(process.execPath, [
+    '-e',
+    "require('./install-all').installMsix('C:\\\\Temp\\\\installer.msix', () => { throw new Error('spawned'); }, 'win32')",
+    '--',
+    '--dry-run',
+  ], { encoding: 'utf8' });
+
+  assert.match(output, /Add-AppxPackage -Path \$args\[0\] -ErrorAction Stop/);
+  assert.match(output, /C:\\Temp\\installer\.msix/);
+  assert.doesNotMatch(output, /spawned/);
+});
+
+test('Claude and Codex installSoftware use PowerShell MSIX installation on Windows', async () => {
+  const invocations = [];
+  const fakeSpawn = (command, args, options) => {
+    invocations.push({ command, args, options });
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
+  const fakeHttpsGet = (_url, _options, callback) => {
+    const request = new EventEmitter();
+    request.setTimeout = () => request;
+    process.nextTick(() => {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      response.setEncoding = () => {};
+      callback(response);
+      response.emit('data', '');
+      response.emit('end');
+    });
+    return request;
+  };
+
+  for (const config of SOFTWARE_CONFIG.filter((entry) => entry.id === 'claude' || entry.id === 'codex')) {
+    const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-msix-'));
+    await installSoftware(config, fakeSpawn, {
+      target: { platform: 'win32', arch: 'x64', isWindows: true },
+      downloadDir,
+      downloadFile: async (_url, destination) => fs.promises.writeFile(destination, 'msix'),
+      httpsGet: fakeHttpsGet,
+    });
+  }
+
+  assert.equal(invocations.length, 2);
+  assert.deepEqual(invocations.map((invocation) => invocation.command), ['powershell.exe', 'powershell.exe']);
+  assert.match(invocations[0].args.at(-1), /Claude-win-x64\.msix$/);
+  assert.match(invocations[1].args.at(-1), /Codex-Windows-x64\.msix$/);
 });
 
 test('installSoftware stores manifest downloads in the user Downloads folder', () => {
@@ -357,8 +517,14 @@ test('checksum mismatch removes the cached artifact and allows a later retry', a
     }
     return true;
   };
+  const fakeSpawn = () => {
+    spawnCount += 1;
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
 
-  await installSoftware(claude, () => { spawnCount += 1; }, {
+  await installSoftware(claude, fakeSpawn, {
     target: { platform: 'win32', arch: 'x64', isWindows: true },
     downloadDir,
     downloadFile,
@@ -369,7 +535,7 @@ test('checksum mismatch removes the cached artifact and allows a later retry', a
   assert.equal(await fs.promises.access(destination).then(() => true, () => false), false);
   assert.equal(spawnCount, 0);
 
-  await installSoftware(claude, () => { spawnCount += 1; }, {
+  await installSoftware(claude, fakeSpawn, {
     target: { platform: 'win32', arch: 'x64', isWindows: true },
     downloadDir,
     downloadFile,
