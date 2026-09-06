@@ -22,6 +22,28 @@ jobs:
       - run: node --check software-manifest.js
       - run: node --check checksum.js
       - run: node install-all.js --dry-run
+      - name: 验证Add-AppxPackage能否直接安装MSIX
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $msixFiles = Get-ChildItem "$env:USERPROFILE\Downloads\AI工具安装包\*.msix" -ErrorAction SilentlyContinue
+          if (-not $msixFiles) {
+            Write-Host "没找到任何 .msix 文件，跳过"
+          } else {
+            foreach ($file in $msixFiles) {
+              Write-Host "==== 尝试安装: $($file.Name) ===="
+              try {
+                Add-AppxPackage -Path $file.FullName -ErrorAction Stop
+                Write-Host "[结果] 安装成功: $($file.Name)"
+              } catch {
+                Write-Host "[结果] 安装失败: $($file.Name)"
+                $_.Exception | Format-List * -Force
+              }
+            }
+          }
+          Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
+            Select-Object Name, PackageFullName, InstallLocation, Status
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' }
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
@@ -50,6 +72,28 @@ jobs:
       - run: node --check software-manifest.js
       - run: node --check checksum.js
       - run: node install-all.js --dry-run
+      - name: 验证Add-AppxPackage能否直接安装MSIX
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $msixFiles = Get-ChildItem "$env:USERPROFILE\Downloads\AI工具安装包\*.msix" -ErrorAction SilentlyContinue
+          if (-not $msixFiles) {
+            Write-Host "没找到任何 .msix 文件，跳过"
+          } else {
+            foreach ($file in $msixFiles) {
+              Write-Host "==== 尝试安装: $($file.Name) ===="
+              try {
+                Add-AppxPackage -Path $file.FullName -ErrorAction Stop
+                Write-Host "[结果] 安装成功: $($file.Name)"
+              } catch {
+                Write-Host "[结果] 安装失败: $($file.Name)"
+                $_.Exception | Format-List * -Force
+              }
+            }
+          }
+          Get-AppxPackage | Where-Object { $_.Name -match 'Claude|Anthropic|Codex|OpenAI' } |
+            Select-Object Name, PackageFullName, InstallLocation, Status
+          Get-StartApps | Where-Object { $_.Name -match 'Claude|Codex' }
       - run: node install-all.js
       - name: 查询已安装的包
         shell: pwsh
