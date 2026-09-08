@@ -14,6 +14,10 @@ This file records decisions that apply to all future work in this repository.
 - Claude's stable AppUserModelId is `Claude_pzs8sxrjxfjjc!Claude`.
 - CC Switch is a per-user MSI; its validated executable path is `%LOCALAPPDATA%\\Programs\\CC Switch\\CC-Switch.exe` and its Start Apps AppID is `com.ccswitch.desktop`.
 
+## macOS Status
+
+- macOS 当前仅为 feasibility-only；在真实 macOS 主机完成每个软件/架构的下载、checksum、安装、Bundle、Gatekeeper 和启动闭环前，不得宣称官方 macOS 支持、生成 macOS 发布产物或创建 macOS Release。
+
 ## Signing
 
 - The certificate strategy is OV code signing, not EV.
