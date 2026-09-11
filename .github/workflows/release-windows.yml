@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+      - '!v*.*.*-macos-arm64-experimental.*'
 
 permissions:
   contents: write
