@@ -32,11 +32,13 @@ test('macOS workflow pushes only the experimental branch and validates a real in
   assert.match(workflow, /macos-install-validation\.log/);
   assert.match(workflow, /plutil/);
   assert.match(workflow, /file/);
+  assert.match(workflow, /Mach-O\.\*arm64\|arm64\.\*Mach-O/);
   assert.match(workflow, /lipo -info/);
   assert.match(workflow, /codesign --verify --deep --strict --verbose=4/);
   assert.match(workflow, /spctl --assess --type execute --verbose=4/);
   assert.match(workflow, /launch=not-tested/);
   assert.match(workflow, /ai-installer-macos-arm64-experimental/);
+  assert.match(workflow, /macos-checksum-validation\.txt/);
   assert.doesNotMatch(workflow, /macos-(?:13|14)-x64|x64|Intel|Rosetta/i);
   assert.match(workflow, /signed|unsigned/i);
   assert.match(workflow, /No Release|not a Release|temporary/i);

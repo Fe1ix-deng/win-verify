@@ -62,7 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           shasum -a 256 dist/ai-installer-macos-arm64 > dist/SHA256SUMS.txt
-          file dist/ai-installer-macos-arm64 > dist/file-evidence.txt
+          file_output="$(file dist/ai-installer-macos-arm64)"
+          printf '%s\n' "$file_output" | tee dist/file-evidence.txt
+          printf '%s\n' "$file_output" | grep -Eiq 'Mach-O.*arm64|arm64.*Mach-O'
           size_bytes="$(stat -f%z dist/ai-installer-macos-arm64)"
           {
             echo "platform=darwin"
@@ -141,6 +143,37 @@ jobs:
           verify_app 'CC Switch' 'cc-switch' "$HOME/Applications/CC Switch.app" 'com.ccswitch.desktop' 'cc-switch'
           verify_app 'Claude Desktop' 'claude' "$HOME/Applications/Claude.app" 'com.anthropic.claudefordesktop' 'Claude'
           verify_app 'Codex' 'codex' "$HOME/Applications/ChatGPT.app" 'com.openai.codex' 'ChatGPT'
+      - name: Extract and validate checksum evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          : > dist/macos-checksum-validation.txt
+          if [ -f dist/macos-install-validation.log ]; then
+            awk '/^checksum: / { sub(/^checksum: /, ""); print }' \
+              dist/macos-install-validation.log > dist/macos-checksum-validation.txt
+          fi
+          if [ "${{ steps.macos_install.outcome }}" = success ]; then
+            node - <<'NODE'
+          const fs = require('node:fs');
+          const lines = fs.readFileSync('dist/macos-checksum-validation.txt', 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const expected = new Set(['CC Switch', 'Claude Desktop', 'Codex']);
+          if (lines.length !== expected.size) throw new Error(`expected ${expected.size} checksum records, got ${lines.length}`);
+          for (const record of lines) {
+            if (!expected.delete(record.application)) throw new Error(`unexpected or duplicate application: ${record.application}`);
+            if (record.status !== 'passed') throw new Error(`checksum failed for ${record.application}`);
+            if (!/^[0-9a-f]{64}$/i.test(record.expected) || !/^[0-9a-f]{64}$/i.test(record.actual)) {
+              throw new Error(`checksum evidence is incomplete for ${record.application}`);
+            }
+            if (record.expected.toLowerCase() !== record.actual.toLowerCase()) {
+              throw new Error(`checksum mismatch for ${record.application}`);
+            }
+          }
+          if (expected.size !== 0) throw new Error(`missing checksum records: ${[...expected].join(', ')}`);
+          NODE
+          fi
       - name: Write final verification summary
         if: always()
         run: |
@@ -182,6 +215,7 @@ jobs:
             dist/print-target.txt
             dist/preexisting-apps.txt
             dist/macos-install-validation.log
+            dist/macos-checksum-validation.txt
             dist/installer-exit-code.txt
             dist/cc-switch-validation.txt
             dist/claude-validation.txt

@@ -37,9 +37,12 @@ function createExecFile({
   metadata = EXPECTED,
   destinationMetadata = null,
   destinationPath = null,
-  moveConflict = false,
+  codesignError = null,
+  spctlError = null,
+  infoOutputs = null,
 } = {}) {
   const calls = [];
+  let infoCallCount = 0;
   const execFile = (command, args, _options, callback) => {
     calls.push({ command, args });
     const finish = (error, stdout = '') => process.nextTick(() => callback(error, stdout, ''));
@@ -53,7 +56,10 @@ function createExecFile({
       return;
     }
     if (command === '/usr/bin/hdiutil' && args[0] === 'info') {
-      finish(null, 'framework\ndriver');
+      const output = infoOutputs
+        ? infoOutputs[Math.min(infoCallCount++, infoOutputs.length - 1)]
+        : 'framework\ndriver';
+      finish(null, output);
       return;
     }
     if (command === '/usr/bin/pgrep') {
@@ -77,8 +83,12 @@ function createExecFile({
       finish(null, `${args[0]}: Mach-O universal binary with 2 architectures: [x86_64] [arm64]`);
       return;
     }
-    if (command === '/usr/bin/codesign' || command === '/usr/sbin/spctl') {
-      finish(null, 'accepted');
+    if (command === '/usr/bin/codesign') {
+      finish(codesignError, 'accepted');
+      return;
+    }
+    if (command === '/usr/sbin/spctl') {
+      finish(spctlError, 'accepted');
       return;
     }
     if (command === '/usr/bin/ditto') {
@@ -94,21 +104,6 @@ function createExecFile({
         return;
       }
       fs.promises.cp(args[0], args[1], { recursive: true }).then(
-        () => finish(null),
-        (error) => finish(error),
-      );
-      return;
-    }
-    if (command === '/bin/mv') {
-      if (args[0] !== '-n') throw new Error(`unexpected mv args: ${args.join(' ')}`);
-      if (moveConflict) {
-        fs.promises.mkdir(args[2], { recursive: true }).then(
-          () => finish(Object.assign(new Error('destination exists'), { code: 'EEXIST' })),
-          (error) => finish(error),
-        );
-        return;
-      }
-      fs.promises.rename(args[1], args[2]).then(
         () => finish(null),
         (error) => finish(error),
       );
@@ -181,8 +176,8 @@ test('installDmg attaches read-only, copies to the user app directory, and detac
   assert.deepEqual(attach.args.slice(1, 4), ['-readonly', '-nobrowse', '-plist']);
   assert.equal(attach.args[4], path.join(root, 'installer.dmg'));
   const ditto = calls.find(({ command }) => command === '/usr/bin/ditto');
-  assert.notEqual(ditto.args[1], result.appPath);
-  assert.equal(calls.some(({ command, args }) => command === '/bin/mv' && args[2] === result.appPath), true);
+  assert.equal(ditto.args[1], result.appPath);
+  assert.equal(calls.some(({ command }) => command === '/bin/mv'), false);
   assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach' && args[1] === '/dev/disk5s1'), true);
 });
 
@@ -324,16 +319,30 @@ test('installDmg removes an application when destination verification fails', as
     }),
     (error) => error.code === 'BUNDLE_ID_MISMATCH',
   );
-  assert.equal(calls.some(({ command, args }) => command === '/bin/mv' && args[2] === destinationAppPath), true);
   assert.equal(await fs.promises.access(destinationAppPath).then(() => true, () => false), false);
 });
 
-test('installDmg blocks a dangling symlink destination without mounting', async () => {
+test('installDmg blocks a destination claimed concurrently without overwriting it', async () => {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-dangling-symlink-'));
   const installDir = path.join(root, 'Applications');
-  const existingAppPath = path.join(installDir, EXPECTED.appName);
+  const destinationAppPath = path.join(installDir, EXPECTED.appName);
+  const userDataPath = path.join(destinationAppPath, 'user-data.txt');
+  const fsModule = {
+    constants: fs.constants,
+    promises: {
+      ...fs.promises,
+      async mkdir(target, options) {
+        if (target === destinationAppPath) {
+          await fs.promises.mkdir(target, { recursive: true });
+          await fs.promises.writeFile(userDataPath, 'user-owned');
+          throw Object.assign(new Error('destination exists'), { code: 'EEXIST' });
+        }
+        return fs.promises.mkdir(target, options);
+      },
+    },
+  };
   await fs.promises.mkdir(installDir, { recursive: true });
-  await fs.promises.symlink(path.join(root, 'missing-target'), existingAppPath);
+  await createMountedApp(root);
   const { execFile, calls } = createExecFile({ mountPoint: root });
 
   await assert.rejects(
@@ -343,22 +352,52 @@ test('installDmg blocks a dangling symlink destination without mounting', async 
       installDir,
       expected: EXPECTED,
       execFile,
-      fsModule: fs,
+      fsModule,
     }),
-    (error) => error.code === 'APP_EXISTS' && error.status === 'blocked',
+    (error) => error.code === 'APP_EXISTS' && error.status === 'blocked' && error.appPath === destinationAppPath,
   );
-  assert.equal(calls.some(({ command }) => command === '/usr/bin/hdiutil'), false);
-  assert.equal((await fs.promises.lstat(existingAppPath)).isSymbolicLink(), true);
+  assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach'), true);
+  assert.equal(calls.some(({ command }) => command === '/usr/bin/ditto'), false);
+  assert.equal(await fs.promises.readFile(userDataPath, 'utf8'), 'user-owned');
 });
 
-test('installDmg blocks a destination created during installation without overwriting it', async () => {
-  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-move-conflict-'));
+test('installDmg preserves a user path if it replaces the claimed destination', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-move-delete-race-'));
   const mountPoint = path.join(root, 'mounted');
   const installDir = path.join(root, 'Applications');
   const destinationAppPath = path.join(installDir, EXPECTED.appName);
+  const userDataPath = path.join(destinationAppPath, 'user-data.txt');
   await fs.promises.mkdir(mountPoint, { recursive: true });
   await createMountedApp(mountPoint);
-  const { execFile, calls } = createExecFile({ mountPoint, moveConflict: true });
+  let destinationLstatCount = 0;
+  const fsModule = {
+    constants: fs.constants,
+    promises: {
+      ...fs.promises,
+      async lstat(target) {
+        if (target === destinationAppPath) {
+          destinationLstatCount += 1;
+          if (destinationLstatCount === 4) {
+            await fs.promises.rm(target, { recursive: true, force: true });
+            await fs.promises.mkdir(target, { recursive: true });
+            await fs.promises.writeFile(userDataPath, 'user-replaced');
+          }
+        }
+        return fs.promises.lstat(target);
+      },
+      async rm(target, options) {
+        if (target === destinationAppPath) {
+          throw new Error('cleanup must be skipped after replacement');
+        }
+        return fs.promises.rm(target, options);
+      },
+    },
+  };
+  const { execFile } = createExecFile({
+    mountPoint,
+    destinationMetadata: { ...EXPECTED, bundleId: 'wrong.destination.bundle' },
+    destinationPath: destinationAppPath,
+  });
 
   await assert.rejects(
     installDmg({
@@ -367,12 +406,120 @@ test('installDmg blocks a destination created during installation without overwr
       installDir,
       expected: EXPECTED,
       execFile,
+      fsModule,
+    }),
+    (error) => error.code === 'BUNDLE_ID_MISMATCH',
+  );
+  assert.equal(await fs.promises.readFile(userDataPath, 'utf8'), 'user-replaced');
+});
+
+/*
+ * Keep the replacement test above focused on the ownership check. This
+ * fixture intentionally rejects any recursive cleanup of the replacement.
+ */
+test('installDmg does not use mv for destination ownership', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-no-mv-'));
+  const mountPoint = path.join(root, 'mounted');
+  const installDir = path.join(root, 'Applications');
+  await fs.promises.mkdir(mountPoint, { recursive: true });
+  await createMountedApp(mountPoint);
+  const { execFile, calls } = createExecFile({ mountPoint });
+
+  await installDmg({
+    dmgPath: path.join(root, 'installer.dmg'),
+    appName: EXPECTED.appName,
+    installDir,
+    expected: EXPECTED,
+    execFile,
+    fsModule: fs,
+  });
+  assert.equal(calls.some(({ command }) => command === '/bin/mv'), false);
+});
+
+function infoPlist(imagePath, device = '/dev/disk5s1', mountPoint = '/Volumes/Recovered') {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>images</key><array><dict>
+<key>image-path</key><string>${imagePath}</string>
+<key>system-entities</key><array><dict><key>dev-entry</key><string>${device}</string><key>mount-point</key><string>${mountPoint}</string></dict></array>
+</dict></array></dict></plist>`;
+}
+
+test('installDmg detaches a newly attached image when attach plist has no details', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-attach-recovery-'));
+  const dmgPath = path.join(root, 'installer.dmg');
+  const malformedAttach = '<plist><dict><key>unexpected</key><string>value</string></dict></plist>';
+  const { execFile, calls } = createExecFile({
+    mountPoint: path.join(root, 'mounted'),
+    attachOutput: malformedAttach,
+    infoOutputs: [
+      infoPlist('/tmp/other.dmg', '/dev/disk4s1', '/Volumes/Other'),
+      infoPlist(dmgPath),
+      'framework\ndriver',
+    ],
+  });
+
+  await assert.rejects(
+    installDmg({
+      dmgPath,
+      appName: EXPECTED.appName,
+      installDir: path.join(root, 'Applications'),
+      expected: EXPECTED,
+      execFile,
       fsModule: fs,
     }),
-    (error) => error.code === 'APP_EXISTS' && error.status === 'blocked',
+    (error) => error.code === 'ATTACH_PLIST_INVALID',
   );
-  assert.equal(calls.some(({ command, args }) => command === '/bin/mv' && args[2] === destinationAppPath), true);
-  assert.equal((await fs.promises.lstat(destinationAppPath)).isDirectory(), true);
+  assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach' && args[1] === '/dev/disk5s1'), true);
+});
+
+test('installDmg stops before copying when codesign rejects the app', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-codesign-reject-'));
+  const mountPoint = path.join(root, 'mounted');
+  const { execFile, calls } = createExecFile({
+    mountPoint,
+    codesignError: Object.assign(new Error('invalid signature'), { code: 1 }),
+  });
+  await fs.promises.mkdir(mountPoint, { recursive: true });
+  await createMountedApp(mountPoint);
+
+  await assert.rejects(
+    installDmg({
+      dmgPath: path.join(root, 'installer.dmg'),
+      appName: EXPECTED.appName,
+      installDir: path.join(root, 'Applications'),
+      expected: EXPECTED,
+      execFile,
+      fsModule: fs,
+    }),
+    (error) => error.code === 'SIGNATURE_INVALID',
+  );
+  assert.equal(calls.some(({ command }) => command === '/usr/bin/ditto'), false);
+  assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach'), true);
+});
+
+test('installDmg stops before copying when Gatekeeper rejects the app', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-spctl-reject-'));
+  const mountPoint = path.join(root, 'mounted');
+  const { execFile, calls } = createExecFile({
+    mountPoint,
+    spctlError: Object.assign(new Error('rejected'), { code: 1 }),
+  });
+  await fs.promises.mkdir(mountPoint, { recursive: true });
+  await createMountedApp(mountPoint);
+
+  await assert.rejects(
+    installDmg({
+      dmgPath: path.join(root, 'installer.dmg'),
+      appName: EXPECTED.appName,
+      installDir: path.join(root, 'Applications'),
+      expected: EXPECTED,
+      execFile,
+      fsModule: fs,
+    }),
+    (error) => error.code === 'GATEKEEPER_REJECTED',
+  );
+  assert.equal(calls.some(({ command }) => command === '/usr/bin/ditto'), false);
+  assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach'), true);
 });
 
 test('installDmg detaches when no app bundle is found', async () => {

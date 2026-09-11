@@ -25,7 +25,7 @@ macOS Intel/x64（`darwin/x64`）本阶段完全后置，保持 `not-tested`；�
 - 使用 `ditto` 复制到当前用户的 `~/Applications`，不写 `/Applications`，不使用 `sudo`。
 - 目标应用运行时返回 `blocked`，不强制结束用户进程。
 - 无论成功或失败都执行 DMG 卸载和临时目录清理；清理失败会保留原始错误并记录 cleanup error。
-- 增加 Node 单元测试和手动触发的 arm64 GitHub Actions 构建/验证 workflow。
+- 增加 Node 单元测试和精确功能分支 push/手动触发的 arm64 GitHub Actions 构建/验证 workflow。
 
 ## 3. 固定上游来源
 
@@ -42,7 +42,7 @@ URL 和 hash 均来自此前已审计的可行性/真实验证报告；本阶段
 本地 Apple Silicon 环境执行：
 
 ```text
-npm test                                      90/90 passed
+npm test                                      106/106 passed
 node --check install-all.js                   passed
 node --check macos-installer.js               passed
 node --check platform-support.js              passed
@@ -67,7 +67,7 @@ SHA-256
 
 ## 5. Windows 回归
 
-现有 Windows x64/ARM64 真机安装、启动和 PE 验证报告保持原样，没有修改 Windows Release workflow 或既有 Release 资产。历史基线为 `npm test 69/69`，Windows x64/ARM64 实机安装与三款应用启动均为通过；本次新增测试套件最终为 `90/90`，其中包含原有 Windows 测试。
+现有 Windows x64/ARM64 真机安装、启动和 PE 验证报告保持原样，没有修改 Windows Release workflow 或既有 Release 资产。历史基线为 `npm test 69/69`，Windows x64/ARM64 实机安装与三款应用启动均为通过；本次新增测试套件最终为 `106/106`，其中包含原有 Windows 测试。
 
 本次在当前 macOS 主机没有重新执行 Windows 实机安装；因此报告使用既有真实 Windows 验证证据，不把 macOS 本地测试冒充 Windows 实机证据。历史验证报告按原文保留，其中已有的 Markdown 行尾硬换行空白未被改写。
 
@@ -85,9 +85,9 @@ SHA-256
 
 workflow 文件：`.github/workflows/package-macos-arm64.yml`。
 
-触发方式：在 GitHub 仓库的 **Actions** 页面选择 **Package macOS Apple Silicon artifact**，点击 **Run workflow**。它只使用 `macos-15` arm64 runner，执行测试、静态检查、`pkg@5.8.1` 版本校验和 arm64 打包，然后生成 `SHA256SUMS.txt`、`file-evidence.txt`、`build-evidence-macos-arm64.txt` 并上传名为 `ai-installer-macos-arm64-experimental` 的临时 artifact，保留 14 天。
+触发方式：精确的 `feature/macos-arm64-experimental` 分支 push 和 GitHub Actions 页面中的 **Run workflow** 都可触发。它只使用 `macos-15` arm64 runner，执行测试、静态检查、`pkg@5.8.1` 版本校验、Mach-O arm64 断言、真实下载/安装和 Bundle 安全验证，然后上传名为 `ai-installer-macos-arm64-experimental` 的临时 artifact，保留 14 天。
 
-该 workflow 明确记录 `signed=false`、`notarized=false`、`launch not-tested`，并声明 artifact 不是 Release。当前本次任务没有触发 GitHub Actions，因此没有新的远端 artifact；已生成的是本地测试用 arm64 Mach-O 文件，不纳入提交。
+该 workflow 明确记录 `signed=false`、`notarized=false`、`launch not-tested`，并声明 artifact 不是 Release。具体 runner、下载、checksum、安装和 Bundle 结果以对应 workflow run 及其 artifact 为准；本地生成的 arm64 Mach-O 文件不纳入提交。
 
 ## 8. 安全和发布边界
 

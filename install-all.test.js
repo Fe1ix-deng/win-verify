@@ -676,12 +676,14 @@ test('installSoftware installs audited macOS arm64 artifacts only after fixed ch
   const claude = SOFTWARE_CONFIG.find((config) => config.id === 'claude');
   const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-macos-'));
   const calls = [];
+  const output = captureConsoleOutput();
   const downloadFile = async (url, destination) => {
     calls.push(['download', url]);
     await writeMacArtifact(destination, 353897855);
   };
-  const verifyFileSha256 = async (filePath, expected) => {
+  const verifyFileSha256 = async (filePath, expected, _fsModule, onVerified) => {
     calls.push(['checksum', filePath, expected]);
+    onVerified({ actual: expected });
     return true;
   };
   const installDmg = async (options) => {
@@ -689,16 +691,21 @@ test('installSoftware installs audited macOS arm64 artifacts only after fixed ch
     return { appPath: path.join(options.installDir, options.appName) };
   };
 
-  const result = await installSoftware(claude, () => {
-    throw new Error('Windows installer spawned');
-  }, {
-    target: { platform: 'darwin', arch: 'arm64', isWindows: false },
-    downloadDir,
-    macInstallDir: path.join(downloadDir, 'Applications'),
-    downloadFile,
-    verifyFileSha256,
-    installDmg,
-  });
+  let result;
+  try {
+    result = await installSoftware(claude, () => {
+      throw new Error('Windows installer spawned');
+    }, {
+      target: { platform: 'darwin', arch: 'arm64', isWindows: false },
+      downloadDir,
+      macInstallDir: path.join(downloadDir, 'Applications'),
+      downloadFile,
+      verifyFileSha256,
+      installDmg,
+    });
+  } finally {
+    output.restore();
+  }
 
   assert.deepEqual(result, {
     status: 'installed',
@@ -709,6 +716,16 @@ test('installSoftware installs audited macOS arm64 artifacts only after fixed ch
   assert.equal(calls[1][2], 'c5451dba21b8bf4232f8feffbff946dc7be4d6a64ee22d3190954e16f62444c9');
   assert.match(calls[2][1], /Claude-mac-universal\.dmg$/);
   assert.match(calls[2][2], /Applications$/);
+  const checksumLine = output.lines.find((line) => line.startsWith('checksum: '));
+  assert.ok(checksumLine);
+  assert.deepEqual(JSON.parse(checksumLine.slice('checksum: '.length)), {
+    application: 'Claude Desktop',
+    filename: 'Claude-mac-universal.dmg',
+    size: 353897855,
+    expected: 'c5451dba21b8bf4232f8feffbff946dc7be4d6a64ee22d3190954e16f62444c9',
+    actual: 'c5451dba21b8bf4232f8feffbff946dc7be4d6a64ee22d3190954e16f62444c9',
+    status: 'passed',
+  });
 });
 
 test('installSoftware removes a macOS DMG and skips mounting when fixed checksum fails', async () => {

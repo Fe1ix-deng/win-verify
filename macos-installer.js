@@ -48,6 +48,54 @@ function plistString(dict, key) {
   return match ? decodeXml(match[1]) : null;
 }
 
+function parsePlistDictionaryTree(plist) {
+  const roots = [];
+  const stack = [];
+  let currentKey = null;
+  const tokenPattern = /<dict>|<\/dict>|<key>([\s\S]*?)<\/key>|<string>([\s\S]*?)<\/string>/g;
+  for (const match of String(plist).matchAll(tokenPattern)) {
+    if (match[0] === '<dict>') {
+      const node = { values: {}, children: [] };
+      if (stack.length > 0) stack.at(-1).children.push(node);
+      else roots.push(node);
+      stack.push(node);
+      currentKey = null;
+      continue;
+    }
+    if (match[0] === '</dict>') {
+      stack.pop();
+      currentKey = null;
+      continue;
+    }
+    if (match[1] !== undefined) {
+      currentKey = decodeXml(match[1]);
+      continue;
+    }
+    if (match[2] !== undefined && stack.length > 0 && currentKey) {
+      stack.at(-1).values[currentKey] = decodeXml(match[2]);
+      currentKey = null;
+    }
+  }
+  return roots;
+}
+
+function parseHdiutilInfoEntries(plist) {
+  const entries = [];
+  const visit = (node, inheritedImagePath = null) => {
+    const imagePath = node.values['image-path'] || inheritedImagePath;
+    if (node.values['dev-entry'] && node.values['mount-point']) {
+      entries.push({
+        imagePath,
+        deviceNode: node.values['dev-entry'],
+        mountPoint: node.values['mount-point'],
+      });
+    }
+    for (const child of node.children) visit(child, imagePath);
+  };
+  for (const root of parsePlistDictionaryTree(plist)) visit(root);
+  return entries;
+}
+
 function parseAttachPlist(plist) {
   const dictionaries = String(plist).match(/<dict>[\s\S]*?<\/dict>/g) || [];
   for (const dictionary of dictionaries) {
@@ -126,6 +174,39 @@ async function ensureMacInstallDestinationAvailable(appPath, fsModule) {
     `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${appPath}`,
     'APP_EXISTS',
     { status: 'blocked', appPath },
+  );
+}
+
+async function claimMacInstallDestination(appPath, fsModule) {
+  try {
+    await fsModule.promises.mkdir(appPath);
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      throw makeMacError(
+        `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${appPath}`,
+        'APP_EXISTS',
+        { status: 'blocked', appPath },
+      );
+    }
+    throw makeMacError(`无法创建用户应用目录: ${appPath}`, 'INSTALL_PATH_CREATE_FAILED', { cause: error });
+  }
+
+  try {
+    const stat = await fsModule.promises.lstat(appPath);
+    return { dev: stat.dev, ino: stat.ino };
+  } catch (error) {
+    throw makeMacError(`无法确认用户应用目录: ${appPath}`, 'INSTALL_PATH_CHECK_FAILED', { cause: error });
+  }
+}
+
+function sameFileIdentity(expected, actual) {
+  return Boolean(
+    expected
+      && actual
+      && Number.isInteger(expected.dev)
+      && Number.isInteger(expected.ino)
+      && expected.dev === actual.dev
+      && expected.ino === actual.ino,
   );
 }
 
@@ -264,8 +345,29 @@ async function installDmg({
   let result;
   let failure = null;
   let destinationAppPath = knownDestinationAppPath;
-  let temporaryAppPath = null;
   let destinationCreated = false;
+  let destinationIdentity = null;
+
+  let beforeAttached = [];
+  try {
+    const info = await execFileAsync(execFile, '/usr/bin/hdiutil', ['info', '-plist']);
+    beforeAttached = parseHdiutilInfoEntries(info.stdout);
+  } catch {
+    beforeAttached = [];
+  }
+
+  const recoverAttachedImage = async (partial = null) => {
+    if (partial && (partial.deviceNode || partial.mountPoint)) return partial;
+    try {
+      const info = await execFileAsync(execFile, '/usr/bin/hdiutil', ['info', '-plist']);
+      const current = parseHdiutilInfoEntries(info.stdout);
+      const beforeKeys = new Set(beforeAttached.map(({ deviceNode, mountPoint }) => `${deviceNode}\n${mountPoint}`));
+      const newEntries = current.filter(({ deviceNode, mountPoint }) => !beforeKeys.has(`${deviceNode}\n${mountPoint}`));
+      return newEntries.find((entry) => entry.imagePath === dmgPath) || newEntries[0] || null;
+    } catch {
+      return null;
+    }
+  };
 
   try {
     await fsModule.promises.mkdir(installDir, { recursive: true });
@@ -289,6 +391,7 @@ async function installDmg({
           };
         }
       }
+      attached = await recoverAttachedImage(attached);
       throw error;
     }
     try {
@@ -298,6 +401,7 @@ async function installDmg({
         deviceNode: error.deviceNode || null,
         mountPoint: error.mountPoint || null,
       };
+      attached = await recoverAttachedImage(attached);
       throw error;
     }
 
@@ -317,42 +421,16 @@ async function installDmg({
 
     destinationAppPath = destinationAppPath || path.join(installDir, path.basename(mountedAppPath));
     await ensureMacInstallDestinationAvailable(destinationAppPath, fsModule);
-    temporaryAppPath = path.join(
-      installDir,
-      `.${path.basename(destinationAppPath)}.partial-${process.pid}-${Date.now()}`,
-    );
-    await ensureMacInstallDestinationAvailable(temporaryAppPath, fsModule);
-    await execFileAsync(execFile, '/usr/bin/ditto', [mountedAppPath, temporaryAppPath]);
+    destinationIdentity = await claimMacInstallDestination(destinationAppPath, fsModule);
+    destinationCreated = true;
+    await execFileAsync(execFile, '/usr/bin/ditto', [mountedAppPath, destinationAppPath]);
     await verifyMacApp({
-      appPath: temporaryAppPath,
+      appPath: destinationAppPath,
       expected,
       execFile,
       fsModule,
       verifySecurity,
     });
-    try {
-      await execFileAsync(execFile, '/bin/mv', ['-n', temporaryAppPath, destinationAppPath]);
-    } catch (error) {
-      if (error && error.code === 'EEXIST') {
-        throw makeMacError(
-          `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${destinationAppPath}`,
-          'APP_EXISTS',
-          { status: 'blocked', appPath: destinationAppPath },
-        );
-      }
-      throw error;
-    }
-    if (await pathExists(temporaryAppPath, fsModule)) {
-      if (await pathExists(destinationAppPath, fsModule)) {
-        throw makeMacError(
-          `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${destinationAppPath}`,
-          'APP_EXISTS',
-          { status: 'blocked', appPath: destinationAppPath },
-        );
-      }
-      throw makeMacError(`无法将应用移动到用户应用目录: ${destinationAppPath}`, 'MOVE_FAILED');
-    }
-    destinationCreated = true;
     const installedMetadata = await verifyMacApp({
       appPath: destinationAppPath,
       expected,
@@ -390,13 +468,22 @@ async function installDmg({
     }
   }
 
-  if (temporaryAppPath || (failure && destinationCreated)) {
+  if (failure && destinationCreated) {
     try {
-      if (temporaryAppPath) {
-        await fsModule.promises.rm(temporaryAppPath, { recursive: true, force: true });
+      let currentIdentity = null;
+      try {
+        const currentStat = await fsModule.promises.lstat(destinationAppPath);
+        currentIdentity = { dev: currentStat.dev, ino: currentStat.ino };
+      } catch (error) {
+        if (error && error.code !== 'ENOENT') throw error;
       }
-      if (failure && destinationCreated) {
+      if (sameFileIdentity(destinationIdentity, currentIdentity)) {
         await fsModule.promises.rm(destinationAppPath, { recursive: true, force: true });
+      } else if (currentIdentity) {
+        failure.cleanupError = makeMacError(
+          `检测到用户应用目录已被替换，跳过清理以保护 ${destinationAppPath}`,
+          'APP_CLEANUP_SKIPPED',
+        );
       }
     } catch (error) {
       if (failure) {
@@ -422,6 +509,7 @@ async function installDmg({
 }
 
 module.exports = {
+  claimMacInstallDestination,
   ensureMacAppNotRunning,
   findAppBundle,
   installDmg,

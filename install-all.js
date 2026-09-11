@@ -800,7 +800,8 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     console.log(`[下载] 下载完成: ${destPath}`);
 
     if (isMacOs) {
-      await verifyDownloadedFileSize(destPath, artifact.size, options.fsModule || fs);
+      const checksumFs = options.fsModule || fs;
+      await verifyDownloadedFileSize(destPath, artifact.size, checksumFs);
       console.log(`[校验] 文件大小通过: ${formatBytes(artifact.size)}`);
       if (!artifact.sha256) {
         const error = new Error(`macOS 资源缺少固定 SHA-256: ${artifact.filename}`);
@@ -808,8 +809,19 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
         throw error;
       }
       const verify = options.verifyFileSha256 || verifyFileSha256;
-      await verify(destPath, artifact.sha256, options.fsModule || fs);
+      let actualChecksum = null;
+      await verify(destPath, artifact.sha256, checksumFs, ({ actual } = {}) => {
+        actualChecksum = actual || null;
+      });
       console.log('[校验] SHA-256 校验通过');
+      console.log(`checksum: ${JSON.stringify({
+        application: config.name,
+        filename: artifact.filename,
+        size: artifact.size,
+        expected: artifact.sha256,
+        actual: actualChecksum,
+        status: 'passed',
+      })}`);
     } else if (artifact.checksumUrl) {
       try {
         const checksumText = await fetchText(artifact.checksumUrl, options.httpsGet || https.get);
@@ -959,7 +971,7 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     }
     console.log(`[错误] 下载失败: ${error.message}`);
     if (error.retryable) {
-      console.log('[提示] 下载失败，下次运行将继续');
+      console.log(isMacOs ? '[提示] 下载失败，请重新运行安装器' : '[提示] 下载失败，下次运行将继续');
     }
     operationResult = { status: 'failed', code: error.code, error };
   }

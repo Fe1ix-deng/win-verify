@@ -33,7 +33,7 @@ function findChecksumEntry(checksumMap, { softwareName, arch, filename }) {
   return { filename: matches[0][0], checksum: matches[0][1] };
 }
 
-function verifyFileSha256(filePath, expectedHex, fsModule = fs) {
+function verifyFileSha256(filePath, expectedHex, fsModule = fs, onVerified = null) {
   return new Promise((resolve, reject) => {
     const expected = typeof expectedHex === 'string' ? expectedHex.trim().toLowerCase() : '';
     const hash = crypto.createHash('sha256');
@@ -49,7 +49,12 @@ function verifyFileSha256(filePath, expectedHex, fsModule = fs) {
     stream.on('end', () => {
       const actual = hash.digest('hex');
       if (actual === expected) {
-        resolve(true);
+        try {
+          if (typeof onVerified === 'function') onVerified({ filePath, expected, actual });
+          resolve(true);
+        } catch (error) {
+          reject(error);
+        }
         return;
       }
       const error = new Error(`SHA-256 校验失败: 期望 ${expected || '未提供'}，实际 ${actual}`);
