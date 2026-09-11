@@ -146,6 +146,28 @@ test('installDmg attaches read-only, copies to the user app directory, and detac
   assert.equal(calls.some(({ command, args }) => command === '/usr/bin/hdiutil' && args[0] === 'detach' && args[1] === '/dev/disk5s1'), true);
 });
 
+test('installDmg blocks an existing user application without mounting or overwriting it', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-existing-app-'));
+  const installDir = path.join(root, 'Applications');
+  const existingAppPath = path.join(installDir, EXPECTED.appName);
+  await fs.promises.mkdir(existingAppPath, { recursive: true });
+  const { execFile, calls } = createExecFile({ mountPoint: root });
+
+  await assert.rejects(
+    installDmg({
+      dmgPath: path.join(root, 'installer.dmg'),
+      appName: EXPECTED.appName,
+      installDir,
+      expected: EXPECTED,
+      execFile,
+      fsModule: fs,
+    }),
+    (error) => error.code === 'APP_EXISTS' && error.status === 'blocked' && error.appPath === existingAppPath,
+  );
+  assert.equal(calls.some(({ command }) => command === '/usr/bin/hdiutil'), false);
+  assert.equal(await fs.promises.access(existingAppPath).then(() => true, () => false), true);
+});
+
 test('installDmg blocks a running app without killing it and still detaches', async () => {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'macos-running-'));
   const mountPoint = path.join(root, 'mounted');

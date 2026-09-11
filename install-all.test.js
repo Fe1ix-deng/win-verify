@@ -13,7 +13,9 @@ const {
   installMsix,
   installSoftware,
   INSTALL_PATH,
+  main,
   SOFTWARE_CONFIG,
+  summarizeInstallResults,
   waitForExit,
 } = require('./install-all');
 const { detectTarget } = require('./platform-support');
@@ -195,6 +197,121 @@ test('--print-target emits target JSON without starting installation', () => {
   assert.doesNotMatch(output, /下载|安装|https?:\/\//);
 });
 
+function captureConsoleOutput() {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); };
+  return {
+    lines,
+    restore() {
+      console.log = originalLog;
+    },
+  };
+}
+
+test('main CI mode collects three successful results without waiting for keyboard input', async () => {
+  const output = captureConsoleOutput();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  let waitCalled = false;
+  try {
+    const summary = await main({
+      ci: true,
+      install: async () => ({ status: 'installed' }),
+      wait: async () => {
+        waitCalled = true;
+      },
+    });
+
+    assert.equal(waitCalled, false);
+    assert.equal(summary.overall, 'passed');
+    assert.equal(process.exitCode, 0);
+    assert.match(output.lines.join('\n'), /CC Switch: installed/);
+    assert.match(output.lines.join('\n'), /Claude Desktop: installed/);
+    assert.match(output.lines.join('\n'), /Codex: installed/);
+    assert.match(output.lines.join('\n'), /overall: passed/);
+  } finally {
+    output.restore();
+    process.exitCode = originalExitCode;
+  }
+});
+
+test('main CI mode exits non-zero when any result is failed', async () => {
+  const output = captureConsoleOutput();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  let index = 0;
+  try {
+    const summary = await main({
+      ci: true,
+      install: async () => ({ status: ['installed', 'failed', 'installed'][index++] }),
+      wait: async () => { throw new Error('CI mode must not wait'); },
+    });
+
+    assert.equal(summary.overall, 'failed');
+    assert.equal(process.exitCode, 1);
+    assert.match(output.lines.join('\n'), /Claude Desktop: failed/);
+    assert.match(output.lines.join('\n'), /失败的软件: Claude Desktop/);
+    assert.match(output.lines.join('\n'), /overall: failed/);
+  } finally {
+    output.restore();
+    process.exitCode = originalExitCode;
+  }
+});
+
+test('main CI mode exits non-zero and explains blocked applications', async () => {
+  const output = captureConsoleOutput();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  let index = 0;
+  try {
+    const summary = await main({
+      ci: true,
+      install: async () => ({ status: ['installed', 'blocked', 'installed'][index++] }),
+      wait: async () => { throw new Error('CI mode must not wait'); },
+    });
+
+    assert.equal(summary.overall, 'failed');
+    assert.equal(process.exitCode, 1);
+    assert.match(output.lines.join('\n'), /Claude Desktop: blocked/);
+    assert.match(output.lines.join('\n'), /阻塞的软件: Claude Desktop/);
+    assert.match(output.lines.join('\n'), /退出对应应用后重试/);
+  } finally {
+    output.restore();
+    process.exitCode = originalExitCode;
+  }
+});
+
+test('experimental is support metadata, not an installation success status', () => {
+  const summary = summarizeInstallResults(SOFTWARE_CONFIG.map((config) => ({
+    config,
+    result: { status: config.id === 'claude' ? 'experimental' : 'installed' },
+  })));
+
+  assert.equal(summary.overall, 'failed');
+  assert.deepEqual(summary.failed.map(({ config }) => config.name), ['Claude Desktop']);
+});
+
+test('ordinary mode keeps the interactive wait after reporting a real summary', async () => {
+  const output = captureConsoleOutput();
+  let waitCalled = false;
+  try {
+    const summary = await main({
+      ci: false,
+      install: async () => ({ status: 'already-installed' }),
+      wait: async () => {
+        waitCalled = true;
+      },
+    });
+
+    assert.equal(summary.overall, 'passed');
+    assert.equal(waitCalled, true);
+    assert.match(output.lines.join('\n'), /overall: passed/);
+  } finally {
+    output.restore();
+  }
+});
+
 test('Claude and Codex configurations use automatic installation', () => {
   const codex = SOFTWARE_CONFIG.find((config) => config.name === 'Codex');
   const claude = SOFTWARE_CONFIG.find((config) => config.name === 'Claude Desktop');
@@ -350,11 +467,11 @@ test('Claude and Codex installSoftware use PowerShell MSIX installation on Windo
 
 test('installSoftware stores manifest downloads in the user Downloads folder', () => {
   const source = fs.readFileSync('./install-all.js', 'utf8');
-  const downloadDirPattern = /const downloadDir = options\.downloadDir \|\| \(isMacOs\n\s*\? await fs\.promises\.mkdtemp\([\s\S]*?\n\s*: path\.join\(os\.homedir\(\), 'Downloads', 'AI工具安装包'\)\);/g;
+  const downloadDirPattern = /downloadDir = options\.downloadDir \|\| \(isMacOs\n\s*\? await fs\.promises\.mkdtemp\([\s\S]*?\n\s*: path\.join\(os\.homedir\(\), 'Downloads', 'AI工具安装包'\)\);/g;
 
   assert.equal(source.match(downloadDirPattern)?.length, 1);
   assert.equal(source.includes("path.join(os.tmpdir(), 'cc-switch-installer')"), false);
-  assert.equal(source.includes('const destPath = path.join(downloadDir, artifact.filename);'), true);
+  assert.equal(source.includes('destPath = path.join(downloadDir, artifact.filename);'), true);
 });
 
 test('installSoftware skips unsupported Windows x86 before download', async () => {
@@ -577,12 +694,17 @@ test('installSoftware installs audited macOS arm64 artifacts only after fixed ch
   }, {
     target: { platform: 'darwin', arch: 'arm64', isWindows: false },
     downloadDir,
+    macInstallDir: path.join(downloadDir, 'Applications'),
     downloadFile,
     verifyFileSha256,
     installDmg,
   });
 
-  assert.equal(result.status, 'experimental');
+  assert.deepEqual(result, {
+    status: 'installed',
+    supportLevel: 'experimental',
+    appPath: path.join(downloadDir, 'Applications', 'Claude.app'),
+  });
   assert.deepEqual(calls.map(([name]) => name), ['download', 'checksum', 'install']);
   assert.equal(calls[1][2], 'c5451dba21b8bf4232f8feffbff946dc7be4d6a64ee22d3190954e16f62444c9');
   assert.match(calls[2][1], /Claude-mac-universal\.dmg$/);

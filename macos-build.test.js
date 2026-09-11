@@ -14,13 +14,28 @@ test('package scripts define an arm64-only macOS build', () => {
   assert.equal(Object.keys(packageJson.scripts).some((name) => /macos.*x64|x64.*macos/i.test(name)), false);
 });
 
-test('macOS workflow is manual, arm64-only, unsigned, and evidence-oriented', () => {
+test('macOS workflow pushes only the experimental branch and validates a real install', () => {
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'package-macos-arm64.yml'), 'utf8');
+  assert.match(workflow, /push:\s*\n\s+branches:\s*\n\s+- feature\/macos-arm64-experimental/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /runs-on:\s*macos-15/);
   assert.match(workflow, /build:macos:arm64/);
+  assert.match(workflow, /--ci/);
+  assert.match(workflow, /uname -a/);
+  assert.match(workflow, /uname -m/);
+  assert.match(workflow, /sw_vers/);
+  assert.match(workflow, /node --version/);
+  assert.match(workflow, /npm --version/);
+  assert.match(workflow, /df -h/);
+  assert.match(workflow, /test \"\$\(uname -m\)\" = arm64/);
   assert.match(workflow, /SHA256SUMS\.txt/);
-  assert.match(workflow, /launch not-tested/);
+  assert.match(workflow, /macos-install-validation\.log/);
+  assert.match(workflow, /plutil/);
+  assert.match(workflow, /file/);
+  assert.match(workflow, /lipo -info/);
+  assert.match(workflow, /codesign --verify --deep --strict --verbose=4/);
+  assert.match(workflow, /spctl --assess --type execute --verbose=4/);
+  assert.match(workflow, /launch=not-tested/);
   assert.match(workflow, /ai-installer-macos-arm64-experimental/);
   assert.doesNotMatch(workflow, /macos-(?:13|14)-x64|x64|Intel|Rosetta/i);
   assert.match(workflow, /signed|unsigned/i);

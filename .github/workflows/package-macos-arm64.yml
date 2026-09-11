@@ -1,6 +1,9 @@
 name: Package macOS Apple Silicon artifact
 
 on:
+  push:
+    branches:
+      - feature/macos-arm64-experimental
   workflow_dispatch:
 
 permissions:
@@ -18,6 +21,25 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Record and assert Apple Silicon runner
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          {
+            echo 'uname -a'
+            uname -a
+            echo 'uname -m'
+            uname -m
+            echo 'sw_vers'
+            sw_vers
+            echo 'node --version'
+            node --version
+            echo 'npm --version'
+            npm --version
+            echo 'df -h'
+            df -h
+          } | tee dist/runner-evidence-macos-arm64.txt
+          test "$(uname -m)" = arm64
       - run: npm test
       - run: node --check install-all.js
       - run: node --check macos-installer.js
@@ -34,21 +56,118 @@ jobs:
           set -euo pipefail
           test -x dist/ai-installer-macos-arm64
           target="$(dist/ai-installer-macos-arm64 --print-target)"
+          printf '%s\n' "$target" | tee dist/print-target.txt
           node -e 'const target = JSON.parse(process.argv[1]); if (target.platform !== "darwin" || target.arch !== "arm64" || target.isWindows !== false) process.exit(1);' "$target"
       - name: Record unsigned build evidence
         run: |
           set -euo pipefail
           shasum -a 256 dist/ai-installer-macos-arm64 > dist/SHA256SUMS.txt
           file dist/ai-installer-macos-arm64 > dist/file-evidence.txt
+          size_bytes="$(stat -f%z dist/ai-installer-macos-arm64)"
           {
             echo "platform=darwin"
             echo "architecture=arm64"
+            echo "size_bytes=$size_bytes"
+            echo "print_target=$(cat dist/print-target.txt)"
             echo "signed=false"
             echo "notarized=false"
-            echo "launch not-tested: workflow does not claim GUI launch success"
+            echo "launch=not-tested: workflow does not claim GUI launch success"
             echo "release=false: temporary GitHub Actions artifact only; no Release or tag"
           } > dist/build-evidence-macos-arm64.txt
+      - name: Check clean user Applications directory
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Applications"
+          : > dist/preexisting-apps.txt
+          for app in 'CC Switch.app' 'Claude.app' 'ChatGPT.app'; do
+            app_path="$HOME/Applications/$app"
+            if [ -e "$app_path" ]; then
+              echo "blocked: pre-existing $app_path" | tee -a dist/preexisting-apps.txt
+              exit 1
+            fi
+            echo "absent: $app_path" | tee -a dist/preexisting-apps.txt
+          done
+      - name: Run packaged installer in CI mode
+        id: macos_install
+        continue-on-error: true
+        run: |
+          set +e
+          dist/ai-installer-macos-arm64 --ci 2>&1 | tee dist/macos-install-validation.log
+          installer_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$installer_status" | tee dist/installer-exit-code.txt
+          printf 'installer_exit_code=%s\n' "$installer_status" >> dist/macos-install-validation.log
+          exit "$installer_status"
+      - name: Verify installed application bundles
+        if: steps.macos_install.outcome == 'success'
+        run: |
+          set -euo pipefail
+          verify_app() {
+            local label="$1"
+            local slug="$2"
+            local app_path="$3"
+            local expected_bundle_id="$4"
+            local expected_executable="$5"
+            local plist="$app_path/Contents/Info.plist"
+            local executable="$app_path/Contents/MacOS/$expected_executable"
+            local evidence="dist/${slug}-validation.txt"
+
+            {
+              echo "application=$label"
+              echo "app_path=$app_path"
+              test -d "$app_path"
+              echo 'directory=present'
+              test -f "$plist"
+              bundle_id="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$plist")"
+              bundle_executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$plist")"
+              echo "Bundle ID: $bundle_id"
+              echo "CFBundleExecutable: $bundle_executable"
+              test "$bundle_id" = "$expected_bundle_id"
+              test "$bundle_executable" = "$expected_executable"
+              test -x "$executable"
+              echo 'main_executable=present'
+              /usr/bin/file "$executable"
+              /usr/bin/file "$executable" | grep -Eiq 'arm64'
+              lipo -info "$executable"
+              lipo -info "$executable" | grep -Eiq 'arm64'
+              /usr/bin/codesign --verify --deep --strict --verbose=4 "$app_path"
+              /usr/sbin/spctl --assess --type execute --verbose=4 "$app_path"
+              echo 'codesign=passed'
+              echo 'spctl=passed'
+            } 2>&1 | tee "$evidence"
+          }
+
+          verify_app 'CC Switch' 'cc-switch' "$HOME/Applications/CC Switch.app" 'com.ccswitch.desktop' 'cc-switch'
+          verify_app 'Claude Desktop' 'claude' "$HOME/Applications/Claude.app" 'com.anthropic.claudefordesktop' 'Claude'
+          verify_app 'Codex' 'codex' "$HOME/Applications/ChatGPT.app" 'com.openai.codex' 'ChatGPT'
+      - name: Write final verification summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "runner.uname_m=$(uname -m)"
+            if [ -f dist/installer-exit-code.txt ]; then
+              echo "installer_exit_code=$(cat dist/installer-exit-code.txt)"
+            else
+              echo 'installer_exit_code=not-run'
+            fi
+            echo "bundle_validation_step=${{ steps.macos_install.outcome || 'not-run' }}"
+            echo 'launch=not-tested'
+            echo 'release=false'
+            echo 'artifact=ai-installer-macos-arm64-experimental'
+          } | tee dist/final-verification-summary.txt
+      - name: Assert complete installation validation passed
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f dist/installer-exit-code.txt
+          test "$(cat dist/installer-exit-code.txt)" = 0
+          test -s dist/cc-switch-validation.txt
+          test -s dist/claude-validation.txt
+          test -s dist/codex-validation.txt
+          grep -q '^launch=not-tested$' dist/final-verification-summary.txt
       - name: Upload temporary macOS arm64 verification artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-installer-macos-arm64-experimental
@@ -57,5 +176,14 @@ jobs:
             dist/SHA256SUMS.txt
             dist/file-evidence.txt
             dist/build-evidence-macos-arm64.txt
-          if-no-files-found: error
+            dist/runner-evidence-macos-arm64.txt
+            dist/print-target.txt
+            dist/preexisting-apps.txt
+            dist/macos-install-validation.log
+            dist/installer-exit-code.txt
+            dist/cc-switch-validation.txt
+            dist/claude-validation.txt
+            dist/codex-validation.txt
+            dist/final-verification-summary.txt
+          if-no-files-found: warn
           retention-days: 14

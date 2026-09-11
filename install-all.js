@@ -17,6 +17,17 @@ const { installDmg: defaultInstallDmg } = require('./macos-installer');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const PRINT_TARGET = process.argv.includes('--print-target');
+const CI_MODE = process.argv.includes('--ci');
+const INSTALL_SUCCESS_STATUSES = new Set(['installed', 'already-installed']);
+const INSTALL_RESULT_STATUSES = new Set([
+  'installed',
+  'already-installed',
+  'blocked',
+  'failed',
+  'unsupported',
+  'not-tested',
+  'dry-run',
+]);
 
 const SOFTWARE_CONFIG = [
   {
@@ -734,7 +745,7 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
   if (compatibilityReason) {
     console.log(`[提示] ${compatibilityReason}`);
     console.log('[提示] 未下载当前 MSIX；请自行寻找支持当前 Windows 版本的厂商旧版。');
-    return;
+    return { status: 'blocked', code: 'WINDOWS_COMPATIBILITY' };
   }
 
   if (isMacOs) {
@@ -756,21 +767,30 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
   console.log(`[版本] 目标架构: ${isMacOs ? `macOS ${target.arch}` : `Windows ${target.arch}`}`);
   console.log(`[版本] 下载链接: ${downloadUrl}`);
   console.log(`[版本] 校验文件: ${artifact.checksumUrl || '未提供'}`);
-  const downloadDir = options.downloadDir || (isMacOs
-    ? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cc-switch-installer-macos-'))
-    : path.join(os.homedir(), 'Downloads', 'AI工具安装包'));
-  ownedMacDownloadDir = isMacOs && !options.downloadDir;
-  const cleanupMacDownloadDir = async () => {
-    if (!ownedMacDownloadDir) return;
-    ownedMacDownloadDir = false;
-    try {
-      await fs.promises.rm(downloadDir, { recursive: true, force: true });
-    } catch (error) {
-      console.log(`[警告] 无法清理 macOS 临时目录: ${error.message}`);
-    }
-  };
-  await fs.promises.mkdir(downloadDir, { recursive: true });
-  const destPath = path.join(downloadDir, artifact.filename);
+  let downloadDir;
+  let destPath;
+  let cleanupMacDownloadDir = async () => {};
+  try {
+    downloadDir = options.downloadDir || (isMacOs
+      ? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cc-switch-installer-macos-'))
+      : path.join(os.homedir(), 'Downloads', 'AI工具安装包'));
+    ownedMacDownloadDir = isMacOs && !options.downloadDir;
+    cleanupMacDownloadDir = async () => {
+      if (!ownedMacDownloadDir) return;
+      ownedMacDownloadDir = false;
+      try {
+        await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      } catch (error) {
+        console.log(`[警告] 无法清理 macOS 临时目录: ${error.message}`);
+      }
+    };
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    destPath = path.join(downloadDir, artifact.filename);
+  } catch (error) {
+    console.log(`[错误] 无法准备下载目录: ${error.message}`);
+    await cleanupMacDownloadDir();
+    return { status: 'failed', code: error.code, error };
+  }
 
   console.log();
   console.log('[下载] 正在下载安装包...');
@@ -817,7 +837,7 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
         console.log();
         if (DRY_RUN) {
           console.log('[模拟] 已完成下载和 SHA-256 校验，跳过 DMG 挂载、复制、卸载和启动');
-          operationResult = { status: 'experimental', dryRun: true };
+          operationResult = { status: 'dry-run', supportLevel: 'experimental', dryRun: true };
         } else {
           try {
             const install = options.installDmg || defaultInstallDmg;
@@ -834,7 +854,11 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
             console.log(`[安装] ${config.name} 已复制到用户应用目录: ${installed.appPath}`);
             console.log('[验证] Bundle ID、主可执行文件和 arm64 架构校验通过');
             console.log('[状态] experimental / implementation-in-progress；独立启动结论仍保持 blocked');
-            operationResult = { status: 'experimental', appPath: installed.appPath };
+            operationResult = {
+              status: 'installed',
+              supportLevel: 'experimental',
+              appPath: installed.appPath,
+            };
           } catch (error) {
             const status = error.status || (error.code === 'APP_RUNNING' ? 'blocked' : 'failed');
             console.log(`[${status === 'blocked' ? '阻塞' : '错误'}] ${error.message}`);
@@ -862,14 +886,19 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
           console.log('[验证] 正在验证安装...');
           if (DRY_RUN) {
             console.log('[模拟] 跳过验证（模拟模式）');
+            operationResult = { status: 'dry-run', dryRun: true };
           } else if (artifact.installerType === 'msix') {
             console.log('[验证] ✓ Add-AppxPackage 返回退出码 0');
+            operationResult = { status: 'installed' };
           } else {
-            const installed = await checkInstalled(config.installPath);
+            const check = options.checkInstalled || checkInstalled;
+            const installed = await check(config.installPath);
             if (installed) {
               console.log('[验证] ✓ 安装成功');
+              operationResult = { status: 'installed' };
             } else {
               console.log('[验证] ✗ 安装验证失败，请手动检查');
+              operationResult = { status: 'failed', code: 'INSTALLATION_VERIFY_FAILED' };
             }
           }
         } catch (error) {
@@ -882,11 +911,13 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
             console.log('[提示] 请关闭其他安装程序后重试');
           }
           console.log(`[提示] 你可以手动运行安装包: ${destPath}`);
+          operationResult = { status: 'failed', code: error.code, error };
         }
       } else {
         console.log();
         console.log('[提示] 当前系统不是 Windows，跳过安装');
         console.log(`[提示] 安装包已下载到: ${destPath}`);
+        operationResult = { status: 'unsupported', code: 'PLATFORM_UNSUPPORTED' };
       }
     } else {
       console.log();
@@ -899,6 +930,7 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
       if (/\.msix$/i.test(destPath)) {
         console.log('[提示] .msix 文件需要 Windows 10 1809 或更高版本；Windows 7/8/8.1 不在兼容承诺范围内');
       }
+      operationResult = { status: 'not-tested', installPath: destPath };
     }
   } catch (error) {
     if (error && ['CHECKSUM_MISMATCH', 'FILE_SIZE_MISMATCH', 'FILE_SIZE_MISSING', 'CHECKSUM_MISSING'].includes(error.code)) {
@@ -936,7 +968,37 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
   return operationResult;
 }
 
-async function main() {
+function normalizeInstallResult(config, result) {
+  if (result && INSTALL_RESULT_STATUSES.has(result.status)) return result;
+  const error = new Error(`${config.name} 未返回有效安装结果`);
+  error.code = 'INVALID_INSTALL_RESULT';
+  return { status: 'failed', code: error.code, error };
+}
+
+function summarizeInstallResults(entries) {
+  const results = entries.map(({ config, result }) => ({
+    config,
+    result: normalizeInstallResult(config, result),
+  }));
+  const failed = results.filter(({ result }) => result.status === 'failed');
+  const blocked = results.filter(({ result }) => result.status === 'blocked');
+  const allInstalled = results.length > 0
+    && results.every(({ result }) => INSTALL_SUCCESS_STATUSES.has(result.status));
+  return {
+    results,
+    failed,
+    blocked,
+    allInstalled,
+    overall: allInstalled ? 'passed' : 'failed',
+  };
+}
+
+async function main({
+  configs = SOFTWARE_CONFIG,
+  install = installSoftware,
+  ci = CI_MODE,
+  wait = waitForExit,
+} = {}) {
   if (DRY_RUN) {
     console.log('=== AI 工具一键安装器 v0.1（模拟运行模式）===');
     console.log('[提示] 检测和下载是真实的，但不会真正执行安装');
@@ -947,29 +1009,56 @@ async function main() {
   console.log('即将安装: CC Switch、Claude Desktop、Codex');
   console.log();
 
-  for (const config of SOFTWARE_CONFIG) {
+  const entries = [];
+  for (const config of configs) {
     try {
-      await installSoftware(config);
+      entries.push({ config, result: await install(config) });
     } catch (error) {
       console.log(`\n[错误] ${config.name} 安装过程出错: ${error.message}`);
+      entries.push({
+        config,
+        result: { status: 'failed', code: error.code, error },
+      });
     }
   }
 
+  const summary = summarizeInstallResults(entries);
   console.log(`\n${'='.repeat(50)}`);
+  console.log('=== 安装结果汇总 ===');
+  for (const { config, result } of summary.results) {
+    console.log(`${config.name}: ${result.status}`);
+  }
+  if (summary.failed.length > 0) {
+    console.log(`[失败] 失败的软件: ${summary.failed.map(({ config }) => config.name).join('、')}`);
+  }
+  if (summary.blocked.length > 0) {
+    console.log(`[阻塞] 阻塞的软件: ${summary.blocked.map(({ config }) => config.name).join('、')}`);
+    console.log('[提示] 请退出对应应用后重试；安装器不会强制结束应用');
+  }
+  console.log(`overall: ${summary.overall}`);
+
   if (DRY_RUN) {
     console.log('模拟运行完成！');
     console.log('[提示] 这是模拟运行，没有真正安装软件');
     console.log('[提示] 要真正安装，请运行: node install-all.js');
-  } else {
-    console.log('安装流程完成！');
+  } else if (summary.allInstalled) {
+    console.log('三款软件全部安装成功！');
     console.log();
     console.log('=== 下一步操作 ===');
     console.log('1. 首次启动 Claude Desktop 和 Codex，按提示完成初始化');
     console.log('2. 访问你的中转站网站，点击"导入到 CCS"按钮配置 API 密钥');
     console.log('3. 在 Claude Desktop 和 Codex 的设置中，将 API 提供商设为 CC Switch');
+  } else {
+    console.log('安装流程结束；并非所有软件安装成功。');
   }
   console.log('='.repeat(50));
-  await waitForExit();
+  if (ci) {
+    process.exitCode = summary.allInstalled ? 0 : 1;
+    return summary;
+  }
+
+  await wait();
+  return summary;
 }
 
 if (require.main === module) {
@@ -992,6 +1081,8 @@ module.exports = {
   checkInstalled,
   downloadFile,
   DRY_RUN,
+  CI_MODE,
+  INSTALL_RESULT_STATUSES,
   PRINT_TARGET,
   explainMsiExitCode,
   fetchText,
@@ -1002,6 +1093,8 @@ module.exports = {
   installMsix,
   installSoftware,
   main,
+  normalizeInstallResult,
+  summarizeInstallResults,
   verifyDownloadedFileSize,
   SOFTWARE_CONFIG,
   waitForExit,

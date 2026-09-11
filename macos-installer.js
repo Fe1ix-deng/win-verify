@@ -104,6 +104,20 @@ function makeMacError(message, code, details = {}) {
   return error;
 }
 
+async function ensureMacInstallDestinationAvailable(appPath, fsModule) {
+  try {
+    await fsModule.promises.access(appPath, fsModule.constants.F_OK || fs.constants.F_OK);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return;
+    throw makeMacError(`无法检查用户应用目录中的目标路径: ${appPath}`, 'INSTALL_PATH_CHECK_FAILED', { cause: error });
+  }
+  throw makeMacError(
+    `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${appPath}`,
+    'APP_EXISTS',
+    { status: 'blocked', appPath },
+  );
+}
+
 async function checkArm64Executable(executablePath, execFile) {
   let output;
   try {
@@ -219,10 +233,16 @@ async function installDmg({
   if (platform !== 'darwin') throw new Error('DMG 安装仅支持 macOS 平台');
   if (!dmgPath || !expected) throw new TypeError('dmgPath 和 expected 是必需参数');
 
+  const knownDestinationAppPath = appName ? path.join(installDir, appName) : null;
+  if (knownDestinationAppPath) {
+    await ensureMacInstallDestinationAvailable(knownDestinationAppPath, fsModule);
+  }
+
   const workDir = await fsModule.promises.mkdtemp(path.join(os.tmpdir(), 'cc-switch-macos-'));
   let attached = null;
   let result;
   let failure = null;
+  let destinationAppPath = knownDestinationAppPath;
 
   try {
     await fsModule.promises.mkdir(installDir, { recursive: true });
@@ -249,7 +269,8 @@ async function installDmg({
     });
     await ensureMacAppNotRunning(expected.bundleExecutable, execFile);
 
-    const destinationAppPath = path.join(installDir, appName || path.basename(mountedAppPath));
+    destinationAppPath = destinationAppPath || path.join(installDir, path.basename(mountedAppPath));
+    await ensureMacInstallDestinationAvailable(destinationAppPath, fsModule);
     await execFileAsync(execFile, '/usr/bin/ditto', [mountedAppPath, destinationAppPath]);
     const destinationMetadata = await verifyMacApp({
       appPath: destinationAppPath,
