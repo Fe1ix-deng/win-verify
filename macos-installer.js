@@ -37,6 +37,11 @@ function decodeXml(value) {
     .replace(/&apos;/g, "'");
 }
 
+function plistValues(plist, key) {
+  const pattern = new RegExp(`<key>${key}</key>\\s*<string>([\\s\\S]*?)</string>`, 'g');
+  return [...String(plist).matchAll(pattern)].map((match) => decodeXml(match[1]));
+}
+
 function plistString(dict, key) {
   const pattern = new RegExp(`<key>${key}</key>\\s*<string>([\\s\\S]*?)</string>`);
   const match = dict.match(pattern);
@@ -51,8 +56,14 @@ function parseAttachPlist(plist) {
     if (deviceNode && mountPoint) return { deviceNode, mountPoint };
   }
 
+  const deviceNode = plistValues(plist, 'dev-entry')[0] || null;
+  const mountPoint = plistValues(plist, 'mount-point')[0] || null;
+  if (deviceNode && mountPoint) return { deviceNode, mountPoint };
+
   const error = new Error('hdiutil attach 返回的 plist 缺少设备节点或挂载点');
   error.code = 'ATTACH_PLIST_INVALID';
+  if (deviceNode) error.deviceNode = deviceNode;
+  if (mountPoint) error.mountPoint = mountPoint;
   throw error;
 }
 
@@ -106,7 +117,7 @@ function makeMacError(message, code, details = {}) {
 
 async function ensureMacInstallDestinationAvailable(appPath, fsModule) {
   try {
-    await fsModule.promises.access(appPath, fsModule.constants.F_OK || fs.constants.F_OK);
+    await fsModule.promises.lstat(appPath);
   } catch (error) {
     if (error && error.code === 'ENOENT') return;
     throw makeMacError(`无法检查用户应用目录中的目标路径: ${appPath}`, 'INSTALL_PATH_CHECK_FAILED', { cause: error });
@@ -116,6 +127,16 @@ async function ensureMacInstallDestinationAvailable(appPath, fsModule) {
     'APP_EXISTS',
     { status: 'blocked', appPath },
   );
+}
+
+async function pathExists(appPath, fsModule) {
+  try {
+    await fsModule.promises.lstat(appPath);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 async function checkArm64Executable(executablePath, execFile) {
@@ -243,17 +264,42 @@ async function installDmg({
   let result;
   let failure = null;
   let destinationAppPath = knownDestinationAppPath;
+  let temporaryAppPath = null;
+  let destinationCreated = false;
 
   try {
     await fsModule.promises.mkdir(installDir, { recursive: true });
-    const attachResult = await execFileAsync(execFile, '/usr/bin/hdiutil', [
-      'attach',
-      '-readonly',
-      '-nobrowse',
-      '-plist',
-      dmgPath,
-    ]);
-    attached = parseAttachPlist(attachResult.stdout);
+    let attachResult;
+    try {
+      attachResult = await execFileAsync(execFile, '/usr/bin/hdiutil', [
+        'attach',
+        '-readonly',
+        '-nobrowse',
+        '-plist',
+        dmgPath,
+      ]);
+    } catch (error) {
+      try {
+        attached = parseAttachPlist(error.stdout || error.stderr || '');
+      } catch (parseError) {
+        if (parseError.deviceNode || parseError.mountPoint) {
+          attached = {
+            deviceNode: parseError.deviceNode || null,
+            mountPoint: parseError.mountPoint || null,
+          };
+        }
+      }
+      throw error;
+    }
+    try {
+      attached = parseAttachPlist(attachResult.stdout);
+    } catch (error) {
+      attached = {
+        deviceNode: error.deviceNode || null,
+        mountPoint: error.mountPoint || null,
+      };
+      throw error;
+    }
 
     const mountedAppPath = await findAppBundle(attached.mountPoint, appName, fsModule);
     if (!mountedAppPath) {
@@ -271,8 +317,43 @@ async function installDmg({
 
     destinationAppPath = destinationAppPath || path.join(installDir, path.basename(mountedAppPath));
     await ensureMacInstallDestinationAvailable(destinationAppPath, fsModule);
-    await execFileAsync(execFile, '/usr/bin/ditto', [mountedAppPath, destinationAppPath]);
-    const destinationMetadata = await verifyMacApp({
+    temporaryAppPath = path.join(
+      installDir,
+      `.${path.basename(destinationAppPath)}.partial-${process.pid}-${Date.now()}`,
+    );
+    await ensureMacInstallDestinationAvailable(temporaryAppPath, fsModule);
+    await execFileAsync(execFile, '/usr/bin/ditto', [mountedAppPath, temporaryAppPath]);
+    await verifyMacApp({
+      appPath: temporaryAppPath,
+      expected,
+      execFile,
+      fsModule,
+      verifySecurity,
+    });
+    try {
+      await execFileAsync(execFile, '/bin/mv', ['-n', temporaryAppPath, destinationAppPath]);
+    } catch (error) {
+      if (error && error.code === 'EEXIST') {
+        throw makeMacError(
+          `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${destinationAppPath}`,
+          'APP_EXISTS',
+          { status: 'blocked', appPath: destinationAppPath },
+        );
+      }
+      throw error;
+    }
+    if (await pathExists(temporaryAppPath, fsModule)) {
+      if (await pathExists(destinationAppPath, fsModule)) {
+        throw makeMacError(
+          `目标应用已存在，请先确认并移除后重试；安装器不会覆盖 ${destinationAppPath}`,
+          'APP_EXISTS',
+          { status: 'blocked', appPath: destinationAppPath },
+        );
+      }
+      throw makeMacError(`无法将应用移动到用户应用目录: ${destinationAppPath}`, 'MOVE_FAILED');
+    }
+    destinationCreated = true;
+    const installedMetadata = await verifyMacApp({
       appPath: destinationAppPath,
       expected,
       execFile,
@@ -283,25 +364,45 @@ async function installDmg({
     result = {
       appPath: destinationAppPath,
       mountPoint: attached.mountPoint,
-      metadata: destinationMetadata,
+      metadata: installedMetadata,
       sourceMetadata,
     };
   } catch (error) {
     failure = error;
   }
 
-  if (attached) {
+  if (attached && (attached.deviceNode || attached.mountPoint)) {
+    const detachTarget = attached.deviceNode || attached.mountPoint;
     try {
-      await execFileAsync(execFile, '/usr/bin/hdiutil', ['detach', attached.deviceNode, '-force']);
+      await execFileAsync(execFile, '/usr/bin/hdiutil', ['detach', detachTarget, '-force']);
       const info = await execFileAsync(execFile, '/usr/bin/hdiutil', ['info']);
-      if (info.stdout.includes(attached.deviceNode)) {
-        throw makeMacError(`DMG 卸载后仍检测到设备节点: ${attached.deviceNode}`, 'DETACH_FAILED');
+      const stillAttached = (attached.deviceNode && info.stdout.includes(attached.deviceNode))
+        || (attached.mountPoint && info.stdout.includes(attached.mountPoint));
+      if (stillAttached) {
+        throw makeMacError(`DMG 卸载后仍检测到设备节点或挂载点: ${detachTarget}`, 'DETACH_FAILED');
       }
     } catch (error) {
       if (failure) {
         failure.cleanupError = error;
       } else {
         failure = error;
+      }
+    }
+  }
+
+  if (temporaryAppPath || (failure && destinationCreated)) {
+    try {
+      if (temporaryAppPath) {
+        await fsModule.promises.rm(temporaryAppPath, { recursive: true, force: true });
+      }
+      if (failure && destinationCreated) {
+        await fsModule.promises.rm(destinationAppPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (failure) {
+        failure.cleanupError = failure.cleanupError || error;
+      } else {
+        failure = makeMacError(`无法清理应用临时路径: ${error.message}`, 'APP_CLEANUP_FAILED', { cause: error });
       }
     }
   }

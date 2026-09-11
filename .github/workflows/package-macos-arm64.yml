@@ -99,6 +99,7 @@ jobs:
           printf 'installer_exit_code=%s\n' "$installer_status" >> dist/macos-install-validation.log
           exit "$installer_status"
       - name: Verify installed application bundles
+        id: bundle_validation
         if: steps.macos_install.outcome == 'success'
         run: |
           set -euo pipefail
@@ -151,7 +152,7 @@ jobs:
             else
               echo 'installer_exit_code=not-run'
             fi
-            echo "bundle_validation_step=${{ steps.macos_install.outcome || 'not-run' }}"
+            echo "bundle_validation_step=${{ steps.bundle_validation.outcome || 'not-run' }}"
             echo 'launch=not-tested'
             echo 'release=false'
             echo 'artifact=ai-installer-macos-arm64-experimental'
@@ -165,6 +166,7 @@ jobs:
           test -s dist/cc-switch-validation.txt
           test -s dist/claude-validation.txt
           test -s dist/codex-validation.txt
+          grep -q '^bundle_validation_step=success$' dist/final-verification-summary.txt
           grep -q '^launch=not-tested$' dist/final-verification-summary.txt
       - name: Upload temporary macOS arm64 verification artifact
         if: always()
