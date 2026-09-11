@@ -466,7 +466,7 @@ test('Claude and Codex installSoftware use PowerShell MSIX installation on Windo
 });
 
 test('installSoftware stores manifest downloads in the user Downloads folder', () => {
-  const source = fs.readFileSync('./install-all.js', 'utf8');
+  const source = fs.readFileSync('./install-all.js', 'utf8').replace(/\r\n/g, '\n');
   const downloadDirPattern = /downloadDir = options\.downloadDir \|\| \(isMacOs\n\s*\? await fs\.promises\.mkdtemp\([\s\S]*?\n\s*: path\.join\(os\.homedir\(\), 'Downloads', 'AI工具安装包'\)\);/g;
 
   assert.equal(source.match(downloadDirPattern)?.length, 1);
