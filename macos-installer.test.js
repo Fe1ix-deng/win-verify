@@ -8,7 +8,7 @@ const test = require('node:test');
 
 const {
   findAppBundle,
-  installDmg,
+  installDmg: installDmgImplementation,
   parseAttachPlist,
   verifyMacApp,
 } = require('./macos-installer');
@@ -19,6 +19,10 @@ const EXPECTED = {
   bundleExecutable: 'cc-switch',
   appName: 'CC Switch.app',
 };
+
+function installDmg(options) {
+  return installDmgImplementation({ platform: 'darwin', ...options });
+}
 
 function attachPlist(mountPoint = '/Volumes/CC Switch', device = '/dev/disk5s1') {
   return `<?xml version="1.0" encoding="UTF-8"?>
