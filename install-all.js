@@ -13,6 +13,7 @@ const {
 } = require('./platform-support');
 const { getArtifact } = require('./software-manifest');
 const { findChecksumEntry, parseChecksumText, verifyFileSha256 } = require('./checksum');
+const { installDmg: defaultInstallDmg } = require('./macos-installer');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const PRINT_TARGET = process.argv.includes('--print-target');
@@ -310,6 +311,21 @@ function markRetryable(error) {
 function contentRangeTotal(contentRange) {
   const match = typeof contentRange === 'string' && contentRange.match(/\/([0-9]+)$/);
   return match ? Number(match[1]) : 0;
+}
+
+async function verifyDownloadedFileSize(filePath, expectedSize, fsModule = fs) {
+  if (!Number.isInteger(expectedSize) || expectedSize < 0) {
+    const error = new Error(`下载资源缺少有效文件大小: ${filePath}`);
+    error.code = 'FILE_SIZE_MISSING';
+    throw error;
+  }
+  const actualSize = (await fsModule.promises.stat(filePath)).size;
+  if (actualSize !== expectedSize) {
+    const error = new Error(`文件大小校验失败: 期望 ${formatBytes(expectedSize)}，实际 ${formatBytes(actualSize)}`);
+    error.code = 'FILE_SIZE_MISMATCH';
+    throw error;
+  }
+  return true;
 }
 
 /**
@@ -694,6 +710,9 @@ async function installExe(exePath, spawnProcess = spawn, platform = process.plat
 async function installSoftware(config, spawnProcess = spawn, options = {}) {
   const target = options.target || detectTarget();
   const artifact = getArtifact(config.id, target);
+  const isMacOs = target.platform === 'darwin';
+  let operationResult;
+  let ownedMacDownloadDir = false;
   console.log(`\n${'='.repeat(50)}`);
   console.log(`正在安装: ${config.name}`);
   console.log('='.repeat(50));
@@ -701,8 +720,12 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
   if (!artifact) {
     const reason = getUnsupportedTargetReason(target) || `没有适用于 ${target.platform}/${target.arch} 的官方安装包`;
     console.log(`[提示] ${reason}`);
-    console.log('[提示] 当前下载源只提供 Windows x64 和 ARM64；如需兼容旧系统，请自行寻找厂商旧版。');
-    return;
+    if (target.platform === 'darwin' && target.arch === 'x64') {
+      console.log('[提示] Intel macOS 本阶段保持 not-tested，不会回退到 Apple Silicon 或 Windows 安装包。');
+    } else {
+      console.log('[提示] 当前下载源只提供 Windows x64 和 ARM64；如需兼容旧系统，请自行寻找厂商旧版。');
+    }
+    return { status: target.platform === 'darwin' ? 'not-tested' : 'unsupported' };
   }
 
   const compatibilityReason = artifact.installerType === 'msix'
@@ -714,7 +737,9 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     return;
   }
 
-  if (artifact.installerType === 'msix') {
+  if (isMacOs) {
+    console.log('[状态] macOS Apple Silicon 实验性实现中；真实独立启动证据仍保持 blocked');
+  } else if (artifact.installerType === 'msix') {
     console.log('[检测] MSIX 安装状态将在 Add-AppxPackage 完成后由退出码确认');
   } else {
     console.log('[检测] 正在检查本地安装...');
@@ -728,10 +753,22 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
 
   console.log();
   const downloadUrl = artifact.url;
-  console.log(`[版本] 目标架构: Windows ${target.arch}`);
+  console.log(`[版本] 目标架构: ${isMacOs ? `macOS ${target.arch}` : `Windows ${target.arch}`}`);
   console.log(`[版本] 下载链接: ${downloadUrl}`);
   console.log(`[版本] 校验文件: ${artifact.checksumUrl || '未提供'}`);
-  const downloadDir = options.downloadDir || path.join(os.homedir(), 'Downloads', 'AI工具安装包');
+  const downloadDir = options.downloadDir || (isMacOs
+    ? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cc-switch-installer-macos-'))
+    : path.join(os.homedir(), 'Downloads', 'AI工具安装包'));
+  ownedMacDownloadDir = isMacOs && !options.downloadDir;
+  const cleanupMacDownloadDir = async () => {
+    if (!ownedMacDownloadDir) return;
+    ownedMacDownloadDir = false;
+    try {
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+    } catch (error) {
+      console.log(`[警告] 无法清理 macOS 临时目录: ${error.message}`);
+    }
+  };
   await fs.promises.mkdir(downloadDir, { recursive: true });
   const destPath = path.join(downloadDir, artifact.filename);
 
@@ -742,7 +779,18 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     await download(downloadUrl, destPath, options.httpsGet || https.get);
     console.log(`[下载] 下载完成: ${destPath}`);
 
-    if (artifact.checksumUrl) {
+    if (isMacOs) {
+      await verifyDownloadedFileSize(destPath, artifact.size, options.fsModule || fs);
+      console.log(`[校验] 文件大小通过: ${formatBytes(artifact.size)}`);
+      if (!artifact.sha256) {
+        const error = new Error(`macOS 资源缺少固定 SHA-256: ${artifact.filename}`);
+        error.code = 'CHECKSUM_MISSING';
+        throw error;
+      }
+      const verify = options.verifyFileSha256 || verifyFileSha256;
+      await verify(destPath, artifact.sha256, options.fsModule || fs);
+      console.log('[校验] SHA-256 校验通过');
+    } else if (artifact.checksumUrl) {
       try {
         const checksumText = await fetchText(artifact.checksumUrl, options.httpsGet || https.get);
         const checksumMap = parseChecksumText(checksumText);
@@ -765,7 +813,40 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
     }
 
     if (config.autoInstall) {
-      if (target.isWindows || (DRY_RUN && target.isWindows)) {
+      if (isMacOs) {
+        console.log();
+        if (DRY_RUN) {
+          console.log('[模拟] 已完成下载和 SHA-256 校验，跳过 DMG 挂载、复制、卸载和启动');
+          operationResult = { status: 'experimental', dryRun: true };
+        } else {
+          try {
+            const install = options.installDmg || defaultInstallDmg;
+            const installed = await install({
+              dmgPath: destPath,
+              appName: artifact.appName,
+              installDir: options.macInstallDir || path.join(os.homedir(), 'Applications'),
+              expected: artifact,
+              execFile: options.execFile,
+              fsModule: options.fsModule || fs,
+              platform: target.platform,
+              verifySecurity: options.verifySecurity !== false,
+            });
+            console.log(`[安装] ${config.name} 已复制到用户应用目录: ${installed.appPath}`);
+            console.log('[验证] Bundle ID、主可执行文件和 arm64 架构校验通过');
+            console.log('[状态] experimental / implementation-in-progress；独立启动结论仍保持 blocked');
+            operationResult = { status: 'experimental', appPath: installed.appPath };
+          } catch (error) {
+            const status = error.status || (error.code === 'APP_RUNNING' ? 'blocked' : 'failed');
+            console.log(`[${status === 'blocked' ? '阻塞' : '错误'}] ${error.message}`);
+            if (error.code === 'APP_RUNNING') {
+              console.log('[提示] 请退出目标应用后重试；安装器不会强制结束应用');
+            } else if (error.code === 'SIGNATURE_INVALID' || error.code === 'GATEKEEPER_REJECTED') {
+              console.log('[提示] 未绕过 Gatekeeper 或系统安全策略，未继续安装');
+            }
+            operationResult = { status, code: error.code, error };
+          }
+        }
+      } else if (target.isWindows || (DRY_RUN && target.isWindows)) {
         console.log();
         try {
           if (/\.msi$/i.test(destPath)) {
@@ -820,8 +901,12 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
       }
     }
   } catch (error) {
-    if (error && error.code === 'CHECKSUM_MISMATCH') {
-      console.log(`[错误] SHA-256 校验失败: ${error.message}`);
+    if (error && ['CHECKSUM_MISMATCH', 'FILE_SIZE_MISMATCH', 'FILE_SIZE_MISSING', 'CHECKSUM_MISSING'].includes(error.code)) {
+      if (error.code.startsWith('FILE_SIZE')) {
+        console.log(`[错误] 本地文件大小校验失败: ${error.message}`);
+      } else {
+        console.log(`[错误] SHA-256 校验失败: ${error.message}`);
+      }
       try {
         await fs.promises.unlink(destPath);
         console.log('[提示] 已删除校验失败的缓存文件');
@@ -830,17 +915,25 @@ async function installSoftware(config, spawnProcess = spawn, options = {}) {
           console.log(`[警告] 无法删除校验失败的缓存文件: ${cleanupError.message}`);
         }
       }
-      return;
+      operationResult = { status: 'failed', code: error.code };
+      await cleanupMacDownloadDir();
+      return operationResult;
     }
     if (error && error.code === 'CHECKSUM_AMBIGUOUS') {
       console.log(`[错误] 校验清单歧义: ${error.message}`);
-      return;
+      operationResult = { status: 'failed', code: error.code };
+      await cleanupMacDownloadDir();
+      return operationResult;
     }
     console.log(`[错误] 下载失败: ${error.message}`);
     if (error.retryable) {
       console.log('[提示] 下载失败，下次运行将继续');
     }
+    operationResult = { status: 'failed', code: error.code, error };
   }
+
+  await cleanupMacDownloadDir();
+  return operationResult;
 }
 
 async function main() {
@@ -909,6 +1002,7 @@ module.exports = {
   installMsix,
   installSoftware,
   main,
+  verifyDownloadedFileSize,
   SOFTWARE_CONFIG,
   waitForExit,
 };

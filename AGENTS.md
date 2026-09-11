@@ -16,7 +16,16 @@ This file records decisions that apply to all future work in this repository.
 
 ## macOS Status
 
-- macOS 当前仅为 feasibility-only；在真实 macOS 主机完成每个软件/架构的下载、checksum、安装、Bundle、Gatekeeper 和启动闭环前，不得宣称官方 macOS 支持、生成 macOS 发布产物或创建 macOS Release。
+- macOS Apple Silicon（`darwin/arm64`）是本阶段唯一新增目标，当前状态为 `experimental / implementation-in-progress`。
+- macOS Intel（`darwin/x64`）本阶段不实现安装路径，保持 `not-tested`；不生成 Intel 产物，也不使用 Rosetta 结果替代 Intel 原生验证。
+- 2026-09-10 的项目决策仅覆盖“在三款应用独立启动验收仍为 `blocked` 时允许开发实验版代码”的阶段门槛；旧的真实验证事实保持有效，`blocked` 不得美化为 `supported`。
+- 在 GitHub Actions 和后续真实 macOS 环境验收完成前，不得宣称 macOS 正式支持，不得创建 macOS Release 或 tag。
+- macOS 安装器允许未签名、未公证；文档必须指导用户先校验 SHA-256，再通过 Finder 右键 `Open` 或 System Settings → Privacy & Security → Open Anyway 手动放行。
+- 不自动关闭 Gatekeeper、SIP 或其他系统安全策略；不自动执行 `xattr` 删除 quarantine 属性。
+- macOS 上游应用仍然来自已审计的三个上游项目 Release；不猜测下载链接，不使用 Windows 下载链接。
+- 本工具不构建、不修改、不托管 Claude/Codex 官方二进制文件；安装包来自各自上游 Release。
+- 不使用 `sudo`，不强制结束用户正在运行的应用；运行中的应用必须返回清晰的 `blocked`/重试提示。
+- Windows 现有 x64/ARM64 行为、测试、Release 资产和发布流程必须保持不变。
 
 ## Signing
 

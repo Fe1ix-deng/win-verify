@@ -1,0 +1,61 @@
+name: Package macOS Apple Silicon artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned macOS arm64 installer
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node --check install-all.js
+      - run: node --check macos-installer.js
+      - run: node --check platform-support.js
+      - run: node --check software-manifest.js
+      - name: Verify pkg version
+        run: |
+          version="$(npx pkg --version)"
+          test "$version" = "5.8.1"
+      - name: Build unsigned macOS arm64 installer
+        run: npm run build:macos:arm64
+      - name: Verify packaged arm64 target
+        run: |
+          set -euo pipefail
+          test -x dist/ai-installer-macos-arm64
+          target="$(dist/ai-installer-macos-arm64 --print-target)"
+          node -e 'const target = JSON.parse(process.argv[1]); if (target.platform !== "darwin" || target.arch !== "arm64" || target.isWindows !== false) process.exit(1);' "$target"
+      - name: Record unsigned build evidence
+        run: |
+          set -euo pipefail
+          shasum -a 256 dist/ai-installer-macos-arm64 > dist/SHA256SUMS.txt
+          file dist/ai-installer-macos-arm64 > dist/file-evidence.txt
+          {
+            echo "platform=darwin"
+            echo "architecture=arm64"
+            echo "signed=false"
+            echo "notarized=false"
+            echo "launch not-tested: workflow does not claim GUI launch success"
+            echo "release=false: temporary GitHub Actions artifact only; no Release or tag"
+          } > dist/build-evidence-macos-arm64.txt
+      - name: Upload temporary macOS arm64 verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-installer-macos-arm64-experimental
+          path: |
+            dist/ai-installer-macos-arm64
+            dist/SHA256SUMS.txt
+            dist/file-evidence.txt
+            dist/build-evidence-macos-arm64.txt
+          if-no-files-found: error
+          retention-days: 14

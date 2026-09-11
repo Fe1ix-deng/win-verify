@@ -7,6 +7,7 @@ const {
   detectTarget,
   getWindowsBuild,
   getUnsupportedTargetReason,
+  getTargetStatus,
   getWindowsCompatibilityReason,
   normalizeArch,
 } = require('./platform-support');
@@ -109,6 +110,19 @@ test('detectTarget reports non-Windows target', () => {
   });
 });
 
+test('detectTarget preserves Apple Silicon and Intel macOS architectures', () => {
+  assert.deepEqual(detectTarget({ platform: 'darwin', arch: 'arm64' }), {
+    platform: 'darwin',
+    arch: 'arm64',
+    isWindows: false,
+  });
+  assert.deepEqual(detectTarget({ platform: 'darwin', arch: 'x64' }), {
+    platform: 'darwin',
+    arch: 'x64',
+    isWindows: false,
+  });
+});
+
 test('detectTarget defaults to the current process values', () => {
   const target = detectTarget();
   assert.equal(target.platform, process.platform);
@@ -118,10 +132,20 @@ test('detectTarget defaults to the current process values', () => {
 
 test('getUnsupportedTargetReason explains unsupported targets', () => {
   assert.equal(getUnsupportedTargetReason({ platform: 'win32', arch: 'x86', isWindows: true }), 'Windows x86（32 位）没有官方安装包');
-  assert.equal(getUnsupportedTargetReason({ platform: 'darwin', arch: 'x64', isWindows: false }), '当前系统不是 Windows');
+  assert.equal(getUnsupportedTargetReason({ platform: 'darwin', arch: 'x64', isWindows: false }), 'macOS Intel/x64 本阶段不实现，保持 not-tested');
   assert.equal(getUnsupportedTargetReason({ platform: 'win32', arch: 'x64', isWindows: true }), null);
   assert.equal(getUnsupportedTargetReason({ platform: 'win32', arch: 'arm64', isWindows: true }), null);
   assert.equal(getUnsupportedTargetReason({ platform: 'win32', arch: 'unknown', isWindows: true }), 'Windows 原生架构未知，无法安全选择安装包');
+  assert.equal(getUnsupportedTargetReason({ platform: 'darwin', arch: 'arm64', isWindows: false }), null);
+  assert.equal(getUnsupportedTargetReason({ platform: 'darwin', arch: 'x64', isWindows: false }), 'macOS Intel/x64 本阶段不实现，保持 not-tested');
+  assert.equal(getUnsupportedTargetReason({ platform: 'darwin', arch: 'unknown', isWindows: false }), 'macOS 仅支持 Apple Silicon arm64 实验版');
+});
+
+test('getTargetStatus distinguishes experimental Apple Silicon from untested Intel', () => {
+  assert.equal(getTargetStatus({ platform: 'darwin', arch: 'arm64', isWindows: false }), 'experimental');
+  assert.equal(getTargetStatus({ platform: 'darwin', arch: 'x64', isWindows: false }), 'not-tested');
+  assert.equal(getTargetStatus({ platform: 'win32', arch: 'x64', isWindows: true }), 'supported');
+  assert.equal(getTargetStatus({ platform: 'linux', arch: 'x64', isWindows: false }), 'unsupported');
 });
 
 test('getWindowsCompatibilityReason flags builds before Windows 10 1809', () => {

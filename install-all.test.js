@@ -18,6 +18,11 @@ const {
 } = require('./install-all');
 const { detectTarget } = require('./platform-support');
 
+async function writeMacArtifact(destination, size) {
+  await fs.promises.writeFile(destination, 'dmg');
+  await fs.promises.truncate(destination, size);
+}
+
 test('waitForExit waits for a keypress before closing readline', async () => {
   const input = new EventEmitter();
   const output = {
@@ -345,7 +350,7 @@ test('Claude and Codex installSoftware use PowerShell MSIX installation on Windo
 
 test('installSoftware stores manifest downloads in the user Downloads folder', () => {
   const source = fs.readFileSync('./install-all.js', 'utf8');
-  const downloadDirPattern = /const downloadDir = options\.downloadDir \|\| path\.join\(os\.homedir\(\), 'Downloads', 'AI工具安装包'\);/g;
+  const downloadDirPattern = /const downloadDir = options\.downloadDir \|\| \(isMacOs\n\s*\? await fs\.promises\.mkdtemp\([\s\S]*?\n\s*: path\.join\(os\.homedir\(\), 'Downloads', 'AI工具安装包'\)\);/g;
 
   assert.equal(source.match(downloadDirPattern)?.length, 1);
   assert.equal(source.includes("path.join(os.tmpdir(), 'cc-switch-installer')"), false);
@@ -548,4 +553,111 @@ test('checksum mismatch removes the cached artifact and allows a later retry', a
     verifyFileSha256: verifier,
   });
   assert.equal(downloadCount, 2);
+});
+
+test('installSoftware installs audited macOS arm64 artifacts only after fixed checksum verification', async () => {
+  const claude = SOFTWARE_CONFIG.find((config) => config.id === 'claude');
+  const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-macos-'));
+  const calls = [];
+  const downloadFile = async (url, destination) => {
+    calls.push(['download', url]);
+    await writeMacArtifact(destination, 353897855);
+  };
+  const verifyFileSha256 = async (filePath, expected) => {
+    calls.push(['checksum', filePath, expected]);
+    return true;
+  };
+  const installDmg = async (options) => {
+    calls.push(['install', options.dmgPath, options.installDir, options.expected.bundleId]);
+    return { appPath: path.join(options.installDir, options.appName) };
+  };
+
+  const result = await installSoftware(claude, () => {
+    throw new Error('Windows installer spawned');
+  }, {
+    target: { platform: 'darwin', arch: 'arm64', isWindows: false },
+    downloadDir,
+    downloadFile,
+    verifyFileSha256,
+    installDmg,
+  });
+
+  assert.equal(result.status, 'experimental');
+  assert.deepEqual(calls.map(([name]) => name), ['download', 'checksum', 'install']);
+  assert.equal(calls[1][2], 'c5451dba21b8bf4232f8feffbff946dc7be4d6a64ee22d3190954e16f62444c9');
+  assert.match(calls[2][1], /Claude-mac-universal\.dmg$/);
+  assert.match(calls[2][2], /Applications$/);
+});
+
+test('installSoftware removes a macOS DMG and skips mounting when fixed checksum fails', async () => {
+  const codex = SOFTWARE_CONFIG.find((config) => config.id === 'codex');
+  const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-macos-mismatch-'));
+  let installCalled = false;
+  await installSoftware(codex, () => {
+    throw new Error('Windows installer spawned');
+  }, {
+    target: { platform: 'darwin', arch: 'arm64', isWindows: false },
+    downloadDir,
+    downloadFile: async (_url, destination) => writeMacArtifact(destination, 643007873),
+    verifyFileSha256: async () => {
+      const error = new Error('mismatch');
+      error.code = 'CHECKSUM_MISMATCH';
+      throw error;
+    },
+    installDmg: async () => {
+      installCalled = true;
+    },
+  });
+
+  assert.equal(installCalled, false);
+  assert.deepEqual(await fs.promises.readdir(downloadDir), []);
+});
+
+test('installSoftware reports a running macOS application as blocked without killing it', async () => {
+  const ccSwitch = SOFTWARE_CONFIG.find((config) => config.id === 'cc-switch');
+  const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-macos-running-'));
+  let output = '';
+  const originalLog = console.log;
+  console.log = (...args) => { output += `${args.join(' ')}\n`; };
+  try {
+    const result = await installSoftware(ccSwitch, () => {
+      throw new Error('Windows installer spawned');
+    }, {
+      target: { platform: 'darwin', arch: 'arm64', isWindows: false },
+      downloadDir,
+      downloadFile: async (_url, destination) => writeMacArtifact(destination, 28111538),
+      verifyFileSha256: async () => true,
+      installDmg: async () => {
+        const error = new Error('CC Switch 正在运行');
+        error.code = 'APP_RUNNING';
+        error.status = 'blocked';
+        throw error;
+      },
+    });
+    assert.equal(result.status, 'blocked');
+  } finally {
+    console.log = originalLog;
+  }
+  assert.match(output, /正在运行/);
+  assert.match(output, /不会强制结束/);
+});
+
+test('installSoftware rejects a truncated macOS DMG before checksum or mount', async () => {
+  const claude = SOFTWARE_CONFIG.find((config) => config.id === 'claude');
+  const downloadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'installer-macos-truncated-'));
+  let checksumCalled = false;
+  let installCalled = false;
+  const result = await installSoftware(claude, undefined, {
+    target: { platform: 'darwin', arch: 'arm64', isWindows: false },
+    downloadDir,
+    downloadFile: async (_url, destination) => fs.promises.writeFile(destination, 'partial'),
+    verifyFileSha256: async () => { checksumCalled = true; },
+    installDmg: async () => { installCalled = true; },
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(result.code, 'FILE_SIZE_MISMATCH');
+  assert.equal(checksumCalled, false);
+  assert.equal(installCalled, false);
+  assert.deepEqual(await fs.promises.readdir(downloadDir), []);
 });
