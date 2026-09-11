@@ -1,0 +1,93 @@
+name: Diagnose Windows tests
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Diagnose Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diagnostic | Out-Null
+          npm ci 2>&1 | Tee-Object -FilePath diagnostic/npm-ci.txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Record Windows runtime environment
+        shell: pwsh
+        run: |
+          @(
+            'node --version'
+            (& node --version 2>&1)
+            'npm --version'
+            (& npm --version 2>&1)
+            'node -p "process.platform + '' '' + process.arch"'
+            (& node -p "process.platform + ' ' + process.arch" 2>&1)
+          ) | Tee-Object -FilePath diagnostic/environment.txt
+
+      - name: Run node:test spec reporter
+        shell: pwsh
+        run: |
+          $output = & node --test --test-concurrency=1 --test-reporter=spec 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath diagnostic/test-spec.txt
+          "exit_code=$exitCode" | Tee-Object -FilePath diagnostic/test-spec-exit-code.txt
+
+      - name: Run node:test TAP reporter
+        shell: pwsh
+        run: |
+          $output = & node --test --test-concurrency=1 --test-reporter=tap 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath diagnostic/test-tap.txt
+          "exit_code=$exitCode" | Tee-Object -FilePath diagnostic/test-tap-exit-code.txt
+
+      - name: Assert diagnostic test results
+        if: always()
+        shell: pwsh
+        run: |
+          $specCode = [int]((Get-Content diagnostic/test-spec-exit-code.txt) -replace '^exit_code=', '')
+          $tapCode = [int]((Get-Content diagnostic/test-tap-exit-code.txt) -replace '^exit_code=', '')
+          if ($specCode -ne 0 -or $tapCode -ne 0) {
+            Write-Error "node:test failed: spec=$specCode tap=$tapCode"
+            exit 1
+          }
+
+      - name: Upload complete diagnostic output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-windows-tests-${{ matrix.arch }}
+          path: diagnostic/
+          if-no-files-found: error
+          retention-days: 7
