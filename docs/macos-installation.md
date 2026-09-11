@@ -1,5 +1,11 @@
 # macOS Apple Silicon 实验版
 
+## 支持矩阵
+
+- Windows x64 和原生 Windows ARM64：正式支持的打包目标。
+- macOS Apple Silicon：实验性支持，状态为 `experimental`。
+- macOS Intel：`not-tested`，本阶段不提供安装路径或 Intel 产物。
+
 当前 macOS 支持范围仅为 Apple Silicon（`darwin/arm64`），状态为
 `experimental / implementation-in-progress`。Intel macOS（`darwin/x64`）本阶段
 保持 `not-tested`，不进入安装路径，也不生成 Intel 产物。
