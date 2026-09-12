@@ -23,7 +23,9 @@ function getReleaseFiles() {
   assert.notEqual(actionStart, -1, 'release action must exist');
 
   const action = workflow.slice(actionStart);
-  const match = action.match(/\n\s+files:\s*\|\n((?:\s{12}\S.*\n)+)/);
+  const match = action.match(
+    /(?:^|\r?\n)[ \t]+files:[ \t]*\|[ \t]*\r?\n((?:[ \t]+release-assets\/final\/\S+[ \t]*\r?\n)+)/,
+  );
   assert.ok(match, 'release action must define a literal files block');
 
   return match[1]
