@@ -1,7 +1,7 @@
 # macOS 支持可行性审计报告
 
 审计日期：2026-09-08（Asia/Shanghai）  
-仓库：`https://github.com/Fe1ix-deng/win-verify`  
+仓库：`https://github.com/Fe1ix-deng/claude-codex-installer`
 审计主机：Apple Silicon，`arm64`，macOS `26.6.2`（Darwin `25.6.0`）
 
 ## 判定规则

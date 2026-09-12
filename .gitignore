@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+dist/ai-installer-macos-arm64
+dist/ai-installer-macos-arm64.dmg
+dist/build-evidence-macos-arm64.txt

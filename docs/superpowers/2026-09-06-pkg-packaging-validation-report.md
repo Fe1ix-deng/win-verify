@@ -2,7 +2,7 @@
 
 ## 结论
 
-专用 workflow run [34036249580](https://github.com/Fe1ix-deng/win-verify/actions/runs/34036249580) 已成功完成。x64 与原生 ARM64 的构建、artifact 下载后身份校验、PE 校验、`--print-target`、三款软件安装和 GUI 启动验证全部通过。
+专用 workflow run [34036249580](https://github.com/Fe1ix-deng/claude-codex-installer/actions/runs/34036249580) 已成功完成。x64 与原生 ARM64 的构建、artifact 下载后身份校验、PE 校验、`--print-target`、三款软件安装和 GUI 启动验证全部通过。
 
 源码修复提交为 `0812b959b7fe26e687180d55dc8fc1ae48506849`。CC Switch MSI 是 per-user 安装包，实际目录为 `%LOCALAPPDATA%\\Programs\\CC Switch\\CC-Switch.exe`；源码和验收脚本已从此前错误的 `Program Files` 路径修正为该官方 WiX 配置对应的目录。
 
