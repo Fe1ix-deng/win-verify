@@ -125,18 +125,24 @@ jobs:
       - name: Verify packaged arm64 target
         run: |
           set -euo pipefail
-          test -x dist/ai-installer-macos-arm64
-          target="$(dist/ai-installer-macos-arm64 --print-target)"
+          test -f dist/ai-installer-macos-arm64.dmg
+          mount_point="$RUNNER_TEMP/ai-installer-mount"
+          mkdir -p "$mount_point"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" dist/ai-installer-macos-arm64.dmg
+          trap 'hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true' EXIT
+          test -x "$mount_point/AI Installer.command"
+          test -x "$mount_point/.ai-installer-macos-arm64"
+          target="$("$mount_point/AI Installer.command" --print-target)"
           printf '%s\n' "$target" | tee dist/print-target.txt
           node -e 'const target = JSON.parse(process.argv[1]); if (target.platform !== "darwin" || target.arch !== "arm64" || target.isWindows !== false) process.exit(1);' "$target"
-      - name: Verify Mach-O arm64 and record build evidence
+      - name: Verify DMG and record build evidence
         run: |
           set -euo pipefail
-          file_output="$(file dist/ai-installer-macos-arm64)"
+          file_output="$(file dist/ai-installer-macos-arm64.dmg)"
           printf '%s\n' "$file_output" | tee dist/file-evidence.txt
-          printf '%s\n' "$file_output" | grep -Eiq 'Mach-O.*arm64|arm64.*Mach-O'
-          shasum -a 256 dist/ai-installer-macos-arm64 > dist/SHA256SUMS.txt
-          size_bytes="$(stat -f%z dist/ai-installer-macos-arm64)"
+          printf '%s\n' "$file_output" | grep -Eiq 'DMG|disk image'
+          shasum -a 256 dist/ai-installer-macos-arm64.dmg > dist/SHA256SUMS.txt
+          size_bytes="$(stat -f%z dist/ai-installer-macos-arm64.dmg)"
           {
             echo "platform=darwin"
             echo "architecture=arm64"
@@ -165,7 +171,11 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          dist/ai-installer-macos-arm64 --ci 2>&1 | tee dist/macos-install-validation.log
+          mount_point="$RUNNER_TEMP/ai-installer-mount-ci"
+          mkdir -p "$mount_point"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" dist/ai-installer-macos-arm64.dmg >/dev/null
+          trap 'hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true' EXIT
+          "$mount_point/AI Installer.command" --ci 2>&1 | tee dist/macos-install-validation.log
           installer_status=${PIPESTATUS[0]}
           set -e
           printf '%s\n' "$installer_status" | tee dist/installer-exit-code.txt
@@ -259,7 +269,7 @@ jobs:
             echo "bundle_validation_step=${{ steps.bundle_validation.outcome || 'not-run' }}"
             echo 'launch=not-tested'
             echo 'release=true'
-            echo 'artifact=ai-installer-macos-arm64'
+            echo 'artifact=ai-installer-macos-arm64.dmg'
           } | tee dist/final-verification-summary.txt
       - name: Assert complete installation validation passed
         if: always()
@@ -278,7 +288,7 @@ jobs:
         with:
           name: release-all-macos-arm64
           path: |
-            dist/ai-installer-macos-arm64
+            dist/ai-installer-macos-arm64.dmg
             dist/SHA256SUMS.txt
             dist/file-evidence.txt
             dist/build-evidence-macos-arm64.txt
@@ -336,7 +346,7 @@ jobs:
           mkdir -p release-assets/final
           cp release-assets/x64/ai-installer-win-x64.exe release-assets/final/
           cp release-assets/arm64/ai-installer-win-arm64.exe release-assets/final/
-          cp release-assets/macos/ai-installer-macos-arm64 release-assets/final/
+          cp release-assets/macos/ai-installer-macos-arm64.dmg release-assets/final/
           cp THIRD-PARTY-NOTICES.md release-assets/final/
           test ! -e release-assets/final/ai-installer.exe
           test ! -e release-assets/final/ai-installer-win-x86.exe
@@ -345,14 +355,14 @@ jobs:
             sha256sum \
               ai-installer-win-x64.exe \
               ai-installer-win-arm64.exe \
-              ai-installer-macos-arm64 \
+              ai-installer-macos-arm64.dmg \
             > SHA256SUMS.txt
             sha256sum -c SHA256SUMS.txt
           )
           cat > release-assets/expected-release-files.txt <<'EOF'
           SHA256SUMS.txt
           THIRD-PARTY-NOTICES.md
-          ai-installer-macos-arm64
+          ai-installer-macos-arm64.dmg
           ai-installer-win-arm64.exe
           ai-installer-win-x64.exe
           EOF
@@ -378,7 +388,7 @@ jobs:
           files: |
             release-assets/final/ai-installer-win-x64.exe
             release-assets/final/ai-installer-win-arm64.exe
-            release-assets/final/ai-installer-macos-arm64
+            release-assets/final/ai-installer-macos-arm64.dmg
             release-assets/final/SHA256SUMS.txt
             release-assets/final/THIRD-PARTY-NOTICES.md
           body: |

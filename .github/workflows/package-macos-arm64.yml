@@ -54,18 +54,24 @@ jobs:
       - name: Verify packaged arm64 target
         run: |
           set -euo pipefail
-          test -x dist/ai-installer-macos-arm64
-          target="$(dist/ai-installer-macos-arm64 --print-target)"
+          test -f dist/ai-installer-macos-arm64.dmg
+          mount_point="$RUNNER_TEMP/ai-installer-mount"
+          mkdir -p "$mount_point"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" dist/ai-installer-macos-arm64.dmg
+          trap 'hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true' EXIT
+          test -x "$mount_point/AI Installer.command"
+          test -x "$mount_point/.ai-installer-macos-arm64"
+          target="$("$mount_point/AI Installer.command" --print-target)"
           printf '%s\n' "$target" | tee dist/print-target.txt
           node -e 'const target = JSON.parse(process.argv[1]); if (target.platform !== "darwin" || target.arch !== "arm64" || target.isWindows !== false) process.exit(1);' "$target"
       - name: Record unsigned build evidence
         run: |
           set -euo pipefail
-          shasum -a 256 dist/ai-installer-macos-arm64 > dist/SHA256SUMS.txt
-          file_output="$(file dist/ai-installer-macos-arm64)"
+          shasum -a 256 dist/ai-installer-macos-arm64.dmg > dist/SHA256SUMS.txt
+          file_output="$(file dist/ai-installer-macos-arm64.dmg)"
           printf '%s\n' "$file_output" | tee dist/file-evidence.txt
-          printf '%s\n' "$file_output" | grep -Eiq 'Mach-O.*arm64|arm64.*Mach-O'
-          size_bytes="$(stat -f%z dist/ai-installer-macos-arm64)"
+          printf '%s\n' "$file_output" | grep -Eiq 'DMG|disk image'
+          size_bytes="$(stat -f%z dist/ai-installer-macos-arm64.dmg)"
           {
             echo "platform=darwin"
             echo "architecture=arm64"
@@ -94,7 +100,11 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          dist/ai-installer-macos-arm64 --ci 2>&1 | tee dist/macos-install-validation.log
+          mount_point="$RUNNER_TEMP/ai-installer-mount-ci"
+          mkdir -p "$mount_point"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" dist/ai-installer-macos-arm64.dmg >/dev/null
+          trap 'hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true' EXIT
+          "$mount_point/AI Installer.command" --ci 2>&1 | tee dist/macos-install-validation.log
           installer_status=${PIPESTATUS[0]}
           set -e
           printf '%s\n' "$installer_status" | tee dist/installer-exit-code.txt
@@ -207,7 +217,7 @@ jobs:
         with:
           name: ai-installer-macos-arm64-experimental
           path: |
-            dist/ai-installer-macos-arm64
+            dist/ai-installer-macos-arm64.dmg
             dist/SHA256SUMS.txt
             dist/file-evidence.txt
             dist/build-evidence-macos-arm64.txt

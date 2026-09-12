@@ -13,7 +13,7 @@ const workflow = fs.readFileSync(
 const expectedReleasePaths = [
   'release-assets/final/ai-installer-win-x64.exe',
   'release-assets/final/ai-installer-win-arm64.exe',
-  'release-assets/final/ai-installer-macos-arm64',
+  'release-assets/final/ai-installer-macos-arm64.dmg',
   'release-assets/final/SHA256SUMS.txt',
   'release-assets/final/THIRD-PARTY-NOTICES.md',
 ];
