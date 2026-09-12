@@ -9,9 +9,18 @@ const root = __dirname;
 
 test('package scripts define an arm64-only macOS build', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  assert.equal(packageJson.scripts['build:macos:arm64'], 'pkg install-all.js --target node18-macos-arm64 --output dist/ai-installer-macos-arm64');
+  assert.equal(packageJson.scripts['build:macos:arm64'], 'node scripts/build-macos-dmg.js');
   assert.equal(packageJson.scripts['build:macos'], 'npm run build:macos:arm64');
   assert.equal(Object.keys(packageJson.scripts).some((name) => /macos.*x64|x64.*macos/i.test(name)), false);
+});
+
+test('macOS build wraps the executable in a Finder-friendly DMG', () => {
+  const buildScript = fs.readFileSync(path.join(root, 'scripts', 'build-macos-dmg.js'), 'utf8');
+  assert.match(buildScript, /node18-macos-arm64/);
+  assert.match(buildScript, /ai-installer-macos-arm64\.dmg/);
+  assert.match(buildScript, /AI Installer\.command/);
+  assert.match(buildScript, /hdiutil/);
+  assert.match(buildScript, /\.ai-installer-macos-arm64/);
 });
 
 test('macOS workflow pushes only the experimental branch and validates a real install', () => {
@@ -20,6 +29,9 @@ test('macOS workflow pushes only the experimental branch and validates a real in
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /runs-on:\s*macos-15/);
   assert.match(workflow, /build:macos:arm64/);
+  assert.match(workflow, /ai-installer-macos-arm64\.dmg/);
+  assert.match(workflow, /AI Installer\.command/);
+  assert.doesNotMatch(workflow, /dist\/ai-installer-macos-arm64(?:\s|$)/);
   assert.match(workflow, /--ci/);
   assert.match(workflow, /uname -a/);
   assert.match(workflow, /uname -m/);
@@ -32,7 +44,8 @@ test('macOS workflow pushes only the experimental branch and validates a real in
   assert.match(workflow, /macos-install-validation\.log/);
   assert.match(workflow, /plutil/);
   assert.match(workflow, /file/);
-  assert.match(workflow, /Mach-O\.\*arm64\|arm64\.\*Mach-O/);
+  assert.match(workflow, /DMG|disk image/);
+  assert.match(workflow, /hdiutil attach/);
   assert.match(workflow, /lipo -info/);
   assert.match(workflow, /codesign --verify --deep --strict --verbose=4/);
   assert.match(workflow, /spctl --assess --type execute --verbose=4/);
