@@ -1,7 +1,7 @@
 # macOS 真实安装验证 Follow-up 报告
 
 验证日期：2026-09-09（Asia/Shanghai）
-仓库：`https://github.com/Fe1ix-deng/win-verify`
+仓库：`https://github.com/Fe1ix-deng/claude-codex-installer`
 验证目录：`/var/folders/mr/3wp37gr92g9c2_v8_6h01k140000gn/T//macos-installer-validation-followup.Qpc2g6`（报告完成后删除）
 
 ## 1. 验证范围和判定

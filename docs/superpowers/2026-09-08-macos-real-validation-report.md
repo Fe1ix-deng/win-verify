@@ -2,7 +2,7 @@
 
 验证日期：2026-09-08（Asia/Shanghai）
 
-仓库：`https://github.com/Fe1ix-deng/win-verify`
+仓库：`https://github.com/Fe1ix-deng/claude-codex-installer`
 
 Git commit：`7bc24aae80d51c8e82db88bf23960b3f4a98ffbc`
 验证临时目录：`/var/folders/mr/3wp37gr92g9c2_v8_6h01k140000gn/T//macos-installer-validation.14WpGi`（报告完成后删除）

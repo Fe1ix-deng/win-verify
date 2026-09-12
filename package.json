@@ -1,5 +1,5 @@
 {
-  "name": "cc-switch-ai-installer",
+  "name": "claude-codex-installer",
   "private": true,
   "scripts": {
     "test": "node --test --test-concurrency=1",
