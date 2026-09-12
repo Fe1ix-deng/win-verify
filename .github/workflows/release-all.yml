@@ -338,20 +338,6 @@ jobs:
           cp release-assets/arm64/ai-installer-win-arm64.exe release-assets/final/
           cp release-assets/macos/ai-installer-macos-arm64 release-assets/final/
           cp THIRD-PARTY-NOTICES.md release-assets/final/
-          cp release-assets/x64/release-evidence-x64.txt release-assets/final/
-          cp release-assets/arm64/release-evidence-arm64.txt release-assets/final/
-          cp release-assets/macos/file-evidence.txt release-assets/final/
-          cp release-assets/macos/build-evidence-macos-arm64.txt release-assets/final/
-          cp release-assets/macos/runner-evidence-macos-arm64.txt release-assets/final/
-          cp release-assets/macos/print-target.txt release-assets/final/print-target-macos-arm64.txt
-          cp release-assets/macos/preexisting-apps.txt release-assets/final/
-          cp release-assets/macos/macos-install-validation.log release-assets/final/
-          cp release-assets/macos/macos-checksum-validation.txt release-assets/final/
-          cp release-assets/macos/installer-exit-code.txt release-assets/final/
-          cp release-assets/macos/cc-switch-validation.txt release-assets/final/
-          cp release-assets/macos/claude-validation.txt release-assets/final/
-          cp release-assets/macos/codex-validation.txt release-assets/final/
-          cp release-assets/macos/final-verification-summary.txt release-assets/final/
           test ! -e release-assets/final/ai-installer.exe
           test ! -e release-assets/final/ai-installer-win-x86.exe
           (
@@ -360,26 +346,20 @@ jobs:
               ai-installer-win-x64.exe \
               ai-installer-win-arm64.exe \
               ai-installer-macos-arm64 \
-              > SHA256SUMS.txt
+            > SHA256SUMS.txt
             sha256sum -c SHA256SUMS.txt
           )
-          cat release-assets/final/SHA256SUMS.txt
-      - name: Write build status explanation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > release-assets/final/BUILD-STATUS.md <<EOF
-          # Build status
-
-          - Tag: ${GITHUB_REF_NAME}
-          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Windows: x64 and native ARM64 built with pkg 5.8.1 and PE machine checks.
-          - macOS: Apple Silicon arm64 built on macos-15 and installation-validated for CC Switch, Claude Desktop, and Codex.
-          - macOS GUI launch: not-tested; this release does not claim GUI launch success.
-          - macOS Intel: not-tested and no Intel installer is included.
-          - Installer signing: unsigned and not notarized; no Gatekeeper, SIP, or quarantine bypass was performed.
-          - Upstream applications: their binaries are downloaded at install time and are not included in this Release.
+          cat > release-assets/expected-release-files.txt <<'EOF'
+          SHA256SUMS.txt
+          THIRD-PARTY-NOTICES.md
+          ai-installer-macos-arm64
+          ai-installer-win-arm64.exe
+          ai-installer-win-x64.exe
           EOF
+          find release-assets/final -maxdepth 1 -type f -exec basename {} \; \
+            | LC_ALL=C sort > release-assets/actual-release-files.txt
+          diff -u release-assets/expected-release-files.txt release-assets/actual-release-files.txt
+          cat release-assets/final/SHA256SUMS.txt
       - name: Verify notices exist in the tagged repository snapshot
         env:
           GH_TOKEN: ${{ github.token }}
@@ -401,21 +381,6 @@ jobs:
             release-assets/final/ai-installer-macos-arm64
             release-assets/final/SHA256SUMS.txt
             release-assets/final/THIRD-PARTY-NOTICES.md
-            release-assets/final/BUILD-STATUS.md
-            release-assets/final/release-evidence-x64.txt
-            release-assets/final/release-evidence-arm64.txt
-            release-assets/final/file-evidence.txt
-            release-assets/final/build-evidence-macos-arm64.txt
-            release-assets/final/runner-evidence-macos-arm64.txt
-            release-assets/final/print-target-macos-arm64.txt
-            release-assets/final/preexisting-apps.txt
-            release-assets/final/macos-install-validation.log
-            release-assets/final/macos-checksum-validation.txt
-            release-assets/final/installer-exit-code.txt
-            release-assets/final/cc-switch-validation.txt
-            release-assets/final/claude-validation.txt
-            release-assets/final/codex-validation.txt
-            release-assets/final/final-verification-summary.txt
           body: |
             这是一个未签名版本。
 
@@ -436,5 +401,8 @@ jobs:
             - 或在 System Settings → Privacy & Security → Open Anyway 中手动允许；
             - 不要关闭 Gatekeeper 或 SIP；
             - 不要执行来源不明的命令。
+
+            构建验证：
+            - GitHub Actions：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             上游应用的签名状态与本安装器的签名状态分开说明。上游应用来自各自上游项目的 Release，本 Release 不包含 Claude、Codex 或 CC Switch 的上游二进制本体。
